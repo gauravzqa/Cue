@@ -1,0 +1,90 @@
+"""Should the assistant wake up at all?
+
+This runs on EVERY utterance in always-on mode, including the 95% of speech in
+a room that was never meant for it. It is therefore the only place in daa where
+latency is a hard budget rather than a preference, and the reason the three
+questions it needs are asked in a single batched call: TypeSafe answers N
+questions in one parallel pass, so `addressed` + `end_of_turn` + `needs_planner`
+costs what `addressed` alone would.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from daa.config import Settings
+from daa.contracts import JevProvider
+from daa.jev import questions as Q
+from daa.jev.client import JevUnavailable
+
+
+@dataclass(frozen=True, slots=True)
+class WakeDecision:
+    wake: bool
+    end_of_turn: bool
+    needs_planner: bool
+    addressed_p: float
+    latency_ms: float
+    synthetic: bool = False
+
+
+class AddressGate:
+    def __init__(self, provider: JevProvider, settings: Settings) -> None:
+        self._provider = provider
+        self._settings = settings
+
+    def should_wake(self, transcript: str, ctx: Mapping[str, Any]) -> WakeDecision:
+        """Exactly one Jev call. Never two, whatever the transcript looks like."""
+        if not transcript.strip():
+            # Silence is not addressed to anyone. Skipping the call here is not
+            # an optimisation, it is refusing to ask a question with no subject.
+            return WakeDecision(
+                wake=False,
+                end_of_turn=False,
+                needs_planner=False,
+                addressed_p=0.0,
+                latency_ms=0.0,
+                synthetic=True,
+            )
+
+        try:
+            answers = self._provider.ask(
+                Q.gate_state(transcript, ctx),
+                Q.gate_questions(),
+                # Tighter than the 2.0s default: a wake decision that arrives
+                # after the user has given up and repeated themselves is worse
+                # than no wake decision at all.
+                timeout_s=1.0,
+            )
+        except JevUnavailable:
+            # Fail closed. An assistant that wakes when it cannot tell whether
+            # it was addressed is an assistant that acts on other people's
+            # conversations.
+            return WakeDecision(
+                wake=False,
+                end_of_turn=False,
+                needs_planner=False,
+                addressed_p=0.0,
+                latency_ms=0.0,
+                synthetic=True,
+            )
+
+        addressed_p = answers.noul(Q.Q_ADDRESSED)
+        end_p = answers.noul(Q.Q_END_OF_TURN)
+        planner_p = answers.noul(Q.Q_NEEDS_PLANNER)
+
+        # `wake` and `end_of_turn` are thresholded INDEPENDENTLY and reported
+        # separately. They answer different questions -- "is this for me" versus
+        # "have they stopped talking" -- and the loop needs both: an addressed
+        # utterance that is still mid-sentence must keep the mic open rather
+        # than be discarded as not-for-me.
+        return WakeDecision(
+            wake=addressed_p >= self._settings.address_gate,
+            end_of_turn=end_p >= self._settings.end_of_turn,
+            needs_planner=planner_p >= self._settings.needs_planner,
+            addressed_p=addressed_p,
+            latency_ms=answers.latency_ms,
+            synthetic=answers.synthetic,
+        )

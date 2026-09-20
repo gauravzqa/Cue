@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+# Local run state — contains a record of the user's day. Never commit.
+.daa/
+evals/runs/

@@ -1,0 +1,40 @@
+{"utterance":"hey daa open safari","addressed":true,"category":"direct_command","note":"baseline wake word + command"}
+{"utterance":"open safari","addressed":true,"category":"direct_command","note":"no wake word — always-on must handle this or it is just push-to-talk"}
+{"utterance":"can you find that pdf from last tuesday","addressed":true,"category":"direct_command","note":"polite phrasing, second person"}
+{"utterance":"put those three screenshots in the trash","addressed":true,"category":"direct_command","note":"destructive, must wake AND escalate downstream"}
+{"utterance":"what's on my calendar tomorrow","addressed":true,"category":"direct_command","note":"question form"}
+{"utterance":"actually make that the other one","addressed":true,"category":"followup","note":"only addressed because a turn is open — context dependent"}
+{"utterance":"no wait","addressed":true,"category":"followup","note":"interruption of a pending confirmation"}
+{"utterance":"never mind","addressed":true,"category":"followup","note":"cancels; must wake to be able to cancel"}
+{"utterance":"yeah do it","addressed":true,"category":"followup","note":"consent to a pending action"}
+{"utterance":"undo that","addressed":true,"category":"direct_command","note":"undo must always be reachable"}
+{"utterance":"so i think we should ship it on friday","addressed":false,"category":"overheard","note":"talking to a colleague in the room"}
+{"utterance":"yeah i'll send you the doc after standup","addressed":false,"category":"overheard","note":"second person, but to a human — the hard negative"}
+{"utterance":"can you open the window it's boiling in here","addressed":false,"category":"overheard","note":"'can you open' — lexically near-identical to a command"}
+{"utterance":"hold on let me share my screen","addressed":false,"category":"meeting","note":"video call audio"}
+{"utterance":"sorry you cut out can you say that again","addressed":false,"category":"meeting","note":"'can you' + second person, addressed to a call participant"}
+{"utterance":"next slide please","addressed":false,"category":"meeting","note":"imperative to a human presenter"}
+{"utterance":"okay so where did i put that file","addressed":false,"category":"self_talk","note":"thinking aloud — the most common false-wake source"}
+{"utterance":"ugh why is this so slow","addressed":false,"category":"self_talk","note":"frustration, not a request"}
+{"utterance":"right, open the thing, then click there","addressed":false,"category":"self_talk","note":"narrating own actions while working"}
+{"utterance":"let me just delete all of this","addressed":false,"category":"self_talk","note":"CRITICAL: a false wake here is destructive"}
+{"utterance":"and then you call dot map on the result","addressed":false,"category":"reading_aloud","note":"reading code/docs out loud"}
+{"utterance":"to be or not to be that is the question","addressed":false,"category":"reading_aloud","note":"quoting"}
+{"utterance":"subscribe and hit the bell icon","addressed":false,"category":"media","note":"audio bleed from a video"}
+{"utterance":"in today's episode we're going to look at","addressed":false,"category":"media","note":"podcast/video playing nearby"}
+{"utterance":"hey siri what's the weather","addressed":false,"category":"other_assistant","note":"addressed to a DIFFERENT assistant — must not steal it"}
+{"utterance":"alexa turn off the lights","addressed":false,"category":"other_assistant","note":"same"}
+{"utterance":"mm","addressed":false,"category":"fragment","note":"backchannel"}
+{"utterance":"uh","addressed":false,"category":"fragment","note":"filler"}
+{"utterance":"the","addressed":false,"category":"fragment","note":"STT partial — must not wake mid-word"}
+{"utterance":"open","addressed":false,"category":"fragment","note":"truncated partial of a real command; end_of_turn should be low, not wake"}
+{"utterance":"day a open the downloads folder","addressed":true,"category":"stt_error","note":"'daa' mistranscribed — gate must survive its own name being mangled"}
+{"utterance":"the a can you check my email","addressed":true,"category":"stt_error","note":"same, different mangling"}
+{"utterance":"i was telling daa to open it and it just sat there","addressed":false,"category":"mention_not_address","note":"name MENTIONED, not addressed — classic wake-word false positive"}
+{"utterance":"daa is the name of the assistant i've been building","addressed":false,"category":"mention_not_address","note":"same trap"}
+{"utterance":"tell him i'll call back in ten","addressed":false,"category":"overheard","note":"imperative, third party referent"}
+{"utterance":"remind me to call him back in ten","addressed":true,"category":"direct_command","note":"near-minimal pair with the line above"}
+{"utterance":"what did you say","addressed":true,"category":"followup","note":"asking the assistant to repeat"}
+{"utterance":"what did he say","addressed":false,"category":"overheard","note":"minimal pair — one pronoun apart"}
+{"utterance":"stop","addressed":true,"category":"barge_in","note":"must cut off TTS mid-sentence"}
+{"utterance":"shut up","addressed":true,"category":"barge_in","note":"rude but unambiguous"}
