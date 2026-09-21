@@ -2,7 +2,7 @@
 
 The whole module exists to enforce a single asymmetry:
 
-    tier = max(spec.floor, derived_tier)
+    tier = max(spec.floor, action.floor_hint, derived_tier)
 
 `spec.floor` is a statement about a TOOL'S REACH ("run_shell can do anything").
 `assessment` is a statement about THIS INVOCATION ("this particular `ls` is
@@ -11,6 +11,15 @@ produced at runtime by a model that can be confidently wrong, and by an STT
 stack that can mishear "delete the drafts" as "delete the draft". So the
 assessment is allowed to make us MORE careful and never less. If that rule ever
 becomes two-way, one over-confident Jev answer silently deletes someone's work.
+
+`action.floor_hint` is the third claim, and it closes a gap the first two
+cannot: a floor is per-TOOL, so a click on a nav link and a click on a
+`Pay $412.00` submit button are the same tool at the same floor. The hint is
+raised by the RESOLVER -- deterministic code that read the form's method, the
+button's accessible name, the overwrite collision that actually exists on disk
+-- so it is evidence of the same kind as `spec.floor`, just narrower in scope.
+It is not a model output, and like the floor it may only ever raise. A resolver
+setting `floor_hint=SILENT` on a CONFIRM_VOICE tool changes nothing.
 
 Everything here is pure: same inputs, same Disposition, no I/O, no clock. That
 is deliberate — the gate is the one thing that must be exhaustively testable,
@@ -38,6 +47,8 @@ __all__ = [
     "UNRECOVERABLE",
     "decide",
     "derive_tier",
+    "floor_hint",
+    "is_mutating",
 ]
 
 # --- thresholds -------------------------------------------------------------
@@ -79,6 +90,26 @@ _R_UNRECOVERABLE = "This can't be undone, so I need you to confirm it on screen.
 _R_INFERRED = "You didn't ask for this directly, I worked it out, so I'm checking first."
 _R_NO_ASSESSMENT = "I couldn't check this one properly, so I'm being careful."
 
+# Spoken when the RESOLVER's floor_hint is what raised the tier. Two forms: one
+# that quotes the resolver's own `consequences` ("that button charges you
+# $412.00"), and one for a resolver that raised the floor without saying why --
+# which is a resolver bug, but not a reason to go quiet about it.
+_HINT_TAIL = {
+    RiskTier.ANNOUNCE: "So I'm telling you rather than just quietly doing it.",
+    RiskTier.CONFIRM_VOICE: "So I want to check with you first.",
+    RiskTier.CONFIRM_VISUAL: "So I want you to see it on screen before I do it.",
+    RiskTier.REFUSE: "So I'd rather you did that one yourself.",
+}
+
+_HINT_ALONE = {
+    RiskTier.ANNOUNCE: "This one's a bit more than it looks, so I'm saying so.",
+    RiskTier.CONFIRM_VOICE: "This particular one needs more care than usual, so I'm checking.",
+    RiskTier.CONFIRM_VISUAL: (
+        "This particular one needs more care than usual, so I want you to see it first."
+    ),
+    RiskTier.REFUSE: "This particular one isn't something I should do for you.",
+}
+
 _FLOOR_REASON = {
     RiskTier.SILENT: _R_READ_ONLY,
     RiskTier.ANNOUNCE: _R_SMALL,
@@ -98,18 +129,39 @@ def decide(
 ) -> Disposition:
     """Decide what must happen before `action` runs.
 
-    Never returns a tier below `spec.floor`. That is the invariant the rest of
-    the system is allowed to assume, and test_safety_policy.py asserts it for
-    every tier and for a deliberately maximally-safe assessment.
+    Never returns a tier below `spec.floor`, and never below
+    `action.floor_hint`. Those are the two invariants the rest of the system is
+    allowed to assume, and test_safety_policy.py asserts both across the whole
+    cross-product rather than on sampled examples.
+
+    There are now THREE claims about how careful to be, and the most cautious
+    one wins:
+
+        spec.floor        what this TOOL can reach, written by a human
+        action.floor_hint what THIS INVOCATION turned out to be, determined by
+                          the resolver from the real world
+        derived           what the judgment model thinks of it
+
+    The first two are deterministic and reviewed; the third is a runtime model
+    that can be confidently wrong. All three may raise. None may lower.
     """
     derived, reason = derive_tier(action, spec, assessment)
+    hint = floor_hint(action)
 
     # THE one-way rule. Written as one line, on purpose, so it cannot be
     # refactored into something conditional without someone noticing.
-    tier = RiskTier(max(int(spec.floor), int(derived)))
+    tier = RiskTier(max(int(spec.floor), int(hint), int(derived)))
 
-    # The floor won, so the floor is the honest explanation.
-    if tier > derived:
+    # Whichever claim won gets to do the explaining, because "why are you
+    # asking?" is a question about THIS action. The hint takes ties: it is the
+    # only one of the three that looked at this particular invocation, so
+    # "that button charges you $412" beats both "I always check before doing
+    # this kind of thing" and "this can't be undone" when all three agree on
+    # the tier.
+    if hint > RiskTier.SILENT and hint == tier:
+        reason = _hint_reason(action, tier)
+    elif tier > derived:
+        # The floor won, so the floor is the honest explanation.
         reason = _FLOOR_REASON[tier]
 
     if getattr(settings, "dry_run", False):
@@ -121,6 +173,53 @@ def decide(
         reason = DRY_RUN_PREFIX + reason
 
     return Disposition(tier=tier, reason=reason, assessment=assessment)
+
+
+def floor_hint(action: ResolvedAction) -> RiskTier:
+    """`action.floor_hint` as a tier, defensively. SILENT means "no claim".
+
+    Unset is by far the common case and means exactly nothing: SILENT is the
+    bottom of the scale, so `max(...)` absorbs it and a resolver that sets
+    `floor_hint=SILENT` on a CONFIRM_VOICE tool changes nothing at all.
+
+    Anything we cannot read as a tier is treated as CONFIRM_VOICE rather than
+    discarded. A hint exists because a resolver looked at the real world and
+    concluded this one is worse than it looks; silently dropping a malformed
+    one would turn a resolver bug into a silent execution, which is the exact
+    failure this field was added to prevent. Same rule, and the same reasoning,
+    as `_target_confidence` treating an unrecognised label as "guessing".
+    """
+    raw = getattr(action, "floor_hint", None)
+    if raw is None:
+        return RiskTier.SILENT
+    if isinstance(raw, RiskTier):
+        return raw
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return RiskTier.CONFIRM_VOICE
+    if value not in tuple(int(t) for t in RiskTier):
+        # A number off the end of the scale is still a claim that this is
+        # serious; clamp it in rather than ignore it. Below the scale is not a
+        # claim at all.
+        return RiskTier.SILENT if value < 0 else MAX_POLICY_TIER
+    return RiskTier(value)
+
+
+def _hint_reason(action: ResolvedAction, tier: RiskTier) -> str:
+    """Why this PARTICULAR one is being treated more carefully.
+
+    The resolver knows why it raised the floor; policy does not. What policy
+    has is the resolver's own words for this action -- `consequences`, which
+    exist precisely to carry the things the user must hear -- so the reason is
+    built from those rather than from a generic sentence. A user who asks "why
+    are you asking?" about a payment button should hear that it is a payment
+    button.
+    """
+    detail = ", ".join(str(v) for v in action.consequences.values() if str(v).strip())
+    if detail:
+        return f"This one's not like the others: {detail}. {_HINT_TAIL[tier]}"
+    return _HINT_ALONE[tier]
 
 
 def derive_tier(
@@ -176,7 +275,19 @@ def derive_tier(
     #    excuses it. Blast radius is kept as a second way IN, never a way out:
     #    if the model insists this is a big one, a guessed target confirms even
     #    when the tool claims to be read-only.
-    if target == "guessing" and (is_mutating(spec) or blast >= BLAST_ANNOUNCE):
+    #
+    #    A raised `floor_hint` is a THIRD way in, and it is the one that makes
+    #    the browser case work. `is_mutating` answers "can this TOOL do damage",
+    #    which for a browser click is the same answer for a nav link and for a
+    #    Pay button. `floor_hint` answers "did THIS ONE turn out to be
+    #    dangerous", which is the question that matters -- and if the resolver
+    #    says yes, then being unsure which element we resolved to is suddenly
+    #    worth a sentence. Without this the two signals would disagree
+    #    silently: the hint would raise the floor to ANNOUNCE and the guessing
+    #    rule, reading only the tool, would decline to take it further.
+    if target == "guessing" and (
+        is_mutating(spec) or blast >= BLAST_ANNOUNCE or floor_hint(action) > RiskTier.SILENT
+    ):
         candidates.append((int(RiskTier.CONFIRM_VOICE), 3, _R_GUESSING))
 
     # 3. Voice alone can never authorize destroying something the user cannot

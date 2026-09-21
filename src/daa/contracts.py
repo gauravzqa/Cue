@@ -120,6 +120,14 @@ class ResolvedAction:
     # bare noun phrase -- "report.pdf - should I go ahead?" -- which tells the
     # user WHAT but never WHAT WILL HAPPEN TO IT, and reads identically for
     # revealing a file and for deleting it.
+    # A floor this PARTICULAR invocation must not go below, raised by the
+    # resolver -- deterministic code that inspected the real world, not a
+    # model. `ToolSpec.floor` is per-tool, so without this the only way to say
+    # "this click is a payment" or "this move overwrites something" is to
+    # convince a judgment model, which is precisely what floors exist to
+    # defend against. Policy takes max(spec.floor, floor_hint, derived): it can
+    # only ever RAISE, so a resolver cannot use it to make anything cheaper.
+    floor_hint: RiskTier | None = None
     verb: str = ""
     # Consequences the user MUST hear, because they change what consent means:
     # {"overwrite": "replacing 1 file that is already there"}. Everything here

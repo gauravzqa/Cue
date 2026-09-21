@@ -32,8 +32,20 @@ def spec(floor: RiskTier = RiskTier.ANNOUNCE, **kw) -> ToolSpec:
     )
 
 
-def action(explicit: bool = True, targets=("Screenshot 2026-09-20.png",)) -> ResolvedAction:
-    return ResolvedAction(tool="move_to_trash", args={}, targets=targets, explicit=explicit)
+def action(
+    explicit: bool = True,
+    targets=("Screenshot 2026-09-20.png",),
+    floor_hint: RiskTier | None = None,
+    consequences=None,
+) -> ResolvedAction:
+    return ResolvedAction(
+        tool="move_to_trash",
+        args={},
+        targets=targets,
+        explicit=explicit,
+        floor_hint=floor_hint,
+        consequences=consequences or {},
+    )
 
 
 def assess(
@@ -632,30 +644,52 @@ def test_the_table_matches_the_real_registry() -> None:
 
 def test_the_whole_assessment_space_over_both_kinds_of_tool() -> None:
     """The full cross-product, run over a read-only spec AND a mutating one,
-    because rule 2 now reads the spec and a sweep that only ever saw one kind
-    of tool would only ever test half the rule.
+    and crossed with every value `floor_hint` can take.
 
-    Asserts the two invariants that may never bend: the floor is never lowered,
-    and policy never invents a REFUSE.
+    Rule 2 reads the spec, so a sweep that only ever saw one kind of tool would
+    only ever test half of it; `floor_hint` is a second floor, so a sweep that
+    never set one would never test it at all.
+
+    Asserts the three invariants that may never bend:
+      * the tool's floor is never lowered,
+      * the resolver's floor_hint is never lowered,
+      * policy never invents a REFUSE -- one may only ever come from a human,
+        i.e. from spec.floor or from a resolver's explicit hint.
     """
     checked = 0
     violations: list[str] = []
+    hints = (None, *ALL_TIERS)
     for floor in ALL_TIERS:
         for tags in ((), ("read",), ("mutates",)):
-            s = spec(floor, tags=tags)
-            for blast in (0.0, 0.4, 0.5, 1.0, 1.6, 2.4, 3.0, -5.0, 99.0, float("nan")):
-                for unrec in (0.0, 0.5, 0.51, 1.0, -1.0):
-                    for req in (0.0, 0.49, 0.5, 1.0):
-                        for target in ("certain", "probable", "guessing", "", "nonsense"):
-                            for conf in (0.0, 0.49, 0.5, 1.0):
-                                for explicit in (True, False):
-                                    a = assess(blast, unrec, req, target, conf)
-                                    d = policy.decide(action(explicit=explicit), s, a, LIVE)
-                                    checked += 1
-                                    if d.tier < floor:
-                                        violations.append(f"floor {floor.name} -> {d.tier.name}")
-                                    if d.tier is RiskTier.REFUSE and floor is not RiskTier.REFUSE:
-                                        violations.append(f"invented REFUSE from {floor.name}")
+            tool = spec(floor, tags=tags)
+            for hint in hints:
+                floor_of_hint = hint if hint is not None else RiskTier.SILENT
+                for blast in (0.0, 0.4, 0.5, 1.0, 1.6, 2.4, 3.0, -5.0, 99.0, float("nan")):
+                    for unrec in (0.0, 0.5, 0.51, 1.0, -1.0):
+                        for req in (0.0, 0.49, 0.5, 1.0):
+                            for target in ("certain", "probable", "guessing", "", "nonsense"):
+                                for conf in (0.0, 0.49, 0.5, 1.0):
+                                    for explicit in (True, False):
+                                        a = assess(blast, unrec, req, target, conf)
+                                        act = action(explicit=explicit, floor_hint=hint)
+                                        d = policy.decide(act, tool, a, LIVE)
+                                        checked += 1
+                                        if d.tier < floor:
+                                            violations.append(
+                                                f"floor {floor.name} -> {d.tier.name}"
+                                            )
+                                        if d.tier < floor_of_hint:
+                                            violations.append(
+                                                f"hint {floor_of_hint.name} -> {d.tier.name}"
+                                            )
+                                        if (
+                                            d.tier is RiskTier.REFUSE
+                                            and floor is not RiskTier.REFUSE
+                                            and hint is not RiskTier.REFUSE
+                                        ):
+                                            violations.append(
+                                                f"invented REFUSE from {floor.name}/{hint}"
+                                            )
     assert checked >= 52_800, f"only swept {checked} combinations"
     assert violations == [], violations[:5]
 
@@ -686,3 +720,185 @@ def test_a_read_tagged_tool_above_the_silent_floor_is_not_confirmed_for_guessing
     a = assess(blast=0.1, unrecoverable=0.0, requested=1.0, target="guessing", confidence=1.0)
     d = policy.decide(action(), spec(RiskTier.ANNOUNCE, tags=("files", "read")), a, LIVE)
     assert d.tier is RiskTier.ANNOUNCE
+
+
+# --- the resolver's floor_hint ----------------------------------------------
+#
+# `spec.floor` is per-TOOL. A click on a nav link and a click on a
+# `Pay $412.00` submit button are the same tool at the same floor, and until
+# `floor_hint` existed the only thing that could tell them apart was a judgment
+# model -- which is the thing floors exist to defend against. The hint is
+# raised by the RESOLVER: deterministic code that read the form's method, the
+# button's accessible name, the overwrite collision that is actually on disk.
+
+
+@pytest.mark.parametrize("hint", ALL_TIERS, ids=[t.name for t in ALL_TIERS])
+@pytest.mark.parametrize("floor", ALL_TIERS, ids=[t.name for t in ALL_TIERS])
+def test_floor_hint_can_only_ever_raise(floor: RiskTier, hint: RiskTier) -> None:
+    """Every (floor, hint) pair, including every pair where the hint is
+    strictly LOWER than the floor. A hint below the floor must be inert: if it
+    could pull a tier down, a resolver bug would be a silent execution, and the
+    field would have become the opposite of what it is for."""
+    with_hint = policy.decide(action(floor_hint=hint), spec(floor), SAFEST, LIVE)
+    without = policy.decide(action(), spec(floor), SAFEST, LIVE)
+
+    assert with_hint.tier >= without.tier, "a hint lowered a tier"
+    assert with_hint.tier >= floor, "a hint went under the tool's floor"
+    assert with_hint.tier >= hint, "a hint did not reach its own level"
+    assert with_hint.tier is RiskTier(max(int(floor), int(hint), int(without.tier)))
+
+
+@pytest.mark.parametrize("floor", ALL_TIERS, ids=[t.name for t in ALL_TIERS])
+def test_an_unset_hint_changes_nothing_at_all(floor: RiskTier) -> None:
+    """The overwhelmingly common case has to be exactly free."""
+    for a in (SAFEST, assess(blast=2.0, unrecoverable=0.9, requested=0.0, target="guessing"), None):
+        plain = policy.decide(action(), spec(floor), a, LIVE)
+        none_hint = policy.decide(action(floor_hint=None), spec(floor), a, LIVE)
+        silent_hint = policy.decide(action(floor_hint=RiskTier.SILENT), spec(floor), a, LIVE)
+        assert plain.tier is none_hint.tier is silent_hint.tier
+        assert plain.reason == none_hint.reason == silent_hint.reason
+
+
+def test_a_payment_button_is_confirmed_on_a_tool_that_usually_is_not() -> None:
+    """THE case this field was added for. Same tool, same floor, same
+    reassuring judgment -- one of them charges the user $412."""
+    nav_link = action(targets=("Pricing",))
+    pay = action(
+        targets=("Pay $412.00",),
+        floor_hint=RiskTier.CONFIRM_VISUAL,
+        consequences={"payment": "that button charges you $412.00"},
+    )
+    click = spec(RiskTier.ANNOUNCE, name="browser_click", tags=("browser",))
+    reassuring = assess(blast=0.3, unrecoverable=0.1, requested=0.95, target="certain",
+                        confidence=0.9)
+
+    assert policy.decide(nav_link, click, reassuring, LIVE).tier is RiskTier.ANNOUNCE
+    assert policy.decide(pay, click, reassuring, LIVE).tier is RiskTier.CONFIRM_VISUAL
+
+
+def test_the_reason_says_what_the_resolver_found_not_a_generic_line() -> None:
+    """"Why are you asking?" about a payment button has to be answered with
+    "because it is a payment button". Policy does not know why the hint was
+    raised, but the resolver's own `consequences` do, so the reason is built
+    from those rather than from a stock sentence."""
+    pay = action(
+        targets=("Pay $412.00",),
+        floor_hint=RiskTier.CONFIRM_VISUAL,
+        consequences={"payment": "that button charges you $412.00"},
+    )
+    d = policy.decide(pay, spec(RiskTier.ANNOUNCE), assess(), LIVE)
+    assert "charges you $412.00" in d.reason
+    assert "kind of thing" not in d.reason, "the generic floor line won instead"
+
+
+def test_the_hint_explains_itself_even_when_it_outranks_everything_else() -> None:
+    """The hint takes ties: it is the only one of the three claims that looked
+    at THIS invocation, so it out-explains both the tool's floor and the
+    model's 'this can't be undone' when all three land on the same tier."""
+    unrecoverable = assess(blast=0.0, unrecoverable=0.9, requested=1.0, target="certain")
+    pay = action(
+        floor_hint=RiskTier.CONFIRM_VISUAL,
+        consequences={"payment": "that button charges you $412.00"},
+    )
+    d = policy.decide(pay, spec(RiskTier.CONFIRM_VISUAL), unrecoverable, LIVE)
+    assert d.tier is RiskTier.CONFIRM_VISUAL
+    assert "charges you" in d.reason
+
+
+def test_a_hint_raised_without_saying_why_still_explains_the_tier() -> None:
+    """A resolver that raises the floor and sets no consequences is a resolver
+    bug -- but going quiet about it would be a worse one."""
+    d = policy.decide(action(floor_hint=RiskTier.CONFIRM_VOICE), spec(RiskTier.SILENT),
+                      SAFEST, LIVE)
+    assert d.tier is RiskTier.CONFIRM_VOICE
+    assert "more care than usual" in d.reason
+
+
+def test_a_bigger_judgment_still_out_explains_a_smaller_hint() -> None:
+    """The hint takes ties, not everything. If the model found something worse
+    than the resolver did, the model's reason is the honest one."""
+    a = assess(blast=0.0, unrecoverable=0.9, requested=1.0, target="certain")
+    d = policy.decide(action(floor_hint=RiskTier.ANNOUNCE), spec(RiskTier.SILENT), a, LIVE)
+    assert d.tier is RiskTier.CONFIRM_VISUAL
+    assert "undone" in d.reason
+
+
+def test_the_hint_survives_a_jev_outage() -> None:
+    """A resolver that determined this is a payment form does not stop being
+    right because the judgment model is down. If anything, that is when it
+    matters most: fail-closed raises the FLOOR by one, which knows nothing
+    about this particular invocation."""
+    blind = policy.decide(action(), spec(RiskTier.SILENT), None, LIVE)
+    hinted = policy.decide(
+        action(floor_hint=RiskTier.CONFIRM_VISUAL,
+               consequences={"payment": "that button charges you $412.00"}),
+        spec(RiskTier.SILENT),
+        None,
+        LIVE,
+    )
+    assert blind.tier < RiskTier.CONFIRM_VISUAL
+    assert hinted.tier is RiskTier.CONFIRM_VISUAL
+    assert "charges you" in hinted.reason
+
+
+@pytest.mark.parametrize("floor", ALL_TIERS, ids=[t.name for t in ALL_TIERS])
+@pytest.mark.parametrize("hint", ALL_TIERS, ids=[t.name for t in ALL_TIERS])
+def test_the_hint_holds_with_no_assessment_at_every_floor(floor, hint) -> None:
+    d = policy.decide(action(floor_hint=hint), spec(floor), None, LIVE)
+    assert d.tier >= hint and d.tier >= floor
+
+
+def test_a_hint_and_a_guessed_target_do_not_disagree_silently() -> None:
+    """Where floor_hint and is_mutating overlap.
+
+    `is_mutating` asks "can this TOOL do damage", which for a browser click is
+    the same answer for a nav link and for a Pay button. `floor_hint` asks "did
+    THIS ONE turn out to be dangerous". If the resolver says yes, then being
+    unsure which element we resolved to is suddenly worth a sentence -- so a
+    raised hint is a third way into the guessing rule. Without that the two
+    would disagree quietly: the hint lifts the floor to ANNOUNCE and the
+    guessing rule, reading only the tool, declines to take it further.
+    """
+    guessing = assess(blast=0.1, unrecoverable=0.0, requested=1.0, target="guessing",
+                      confidence=1.0)
+    read_only_tool = spec(RiskTier.SILENT, name="browser_click", tags=("browser", "read"))
+
+    assert policy.decide(action(), read_only_tool, guessing, LIVE).tier is RiskTier.SILENT
+    hinted = policy.decide(action(floor_hint=RiskTier.ANNOUNCE), read_only_tool, guessing, LIVE)
+    assert hinted.tier is RiskTier.CONFIRM_VOICE
+    assert "guessing" in hinted.reason
+
+
+@pytest.mark.parametrize("raw", ["payment", object(), float("nan"), (), {"tier": 3}])
+def test_an_unreadable_hint_is_treated_as_a_warning_not_as_silence(raw) -> None:
+    """A hint exists because a resolver looked at the world and concluded this
+    one is worse than it looks. Dropping a malformed one turns a resolver bug
+    into a silent execution -- the exact failure the field was added to stop.
+    Same rule as an unrecognised target_confidence label becoming "guessing".
+    """
+    bad = ResolvedAction(tool="browser_click", args={}, targets=("x",), floor_hint=raw)
+    d = policy.decide(bad, spec(RiskTier.SILENT), SAFEST, LIVE)
+    assert d.tier >= RiskTier.CONFIRM_VOICE
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(0, RiskTier.SILENT), (2, RiskTier.CONFIRM_VOICE),
+                                               (4, RiskTier.REFUSE), (99, RiskTier.CONFIRM_VISUAL),
+                                               (-3, RiskTier.SILENT)])
+def test_a_numeric_hint_is_clamped_into_the_scale(raw, expected) -> None:
+    """Off the top of the scale is still a claim that this is serious; below
+    the bottom is not a claim at all."""
+    bad = ResolvedAction(tool="browser_click", args={}, targets=("x",), floor_hint=raw)
+    assert policy.floor_hint(bad) is expected
+
+
+def test_a_hint_is_the_only_way_policy_may_reach_refuse() -> None:
+    """REFUSE stays a human's decision. A resolver IS a human's decision --
+    deterministic code somebody wrote and reviewed -- so a hint of REFUSE is
+    honoured, exactly as spec.floor=REFUSE is. What policy still may not do is
+    invent one from a score."""
+    worst = assess(blast=3.0, unrecoverable=1.0, requested=0.0, target="guessing", confidence=0.0)
+    assert policy.decide(action(explicit=False), spec(RiskTier.SILENT), worst, LIVE).tier is (
+        RiskTier.CONFIRM_VISUAL
+    )
+    assert policy.decide(action(floor_hint=RiskTier.REFUSE), spec(RiskTier.SILENT),
+                         SAFEST, LIVE).tier is RiskTier.REFUSE
