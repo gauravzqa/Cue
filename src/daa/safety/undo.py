@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -64,7 +65,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from daa.contracts import UndoAction
+from daa.contracts import Checkpoint, UndoAction
 from daa.safety.audit import REDACTED_KEYS, redact
 from daa.safety.store import harden_dir, harden_file, open_append, secure_dir
 
@@ -74,6 +75,12 @@ DEFAULT_UNDO_PATH = Path.home() / ".daa" / "undo.jsonl"
 
 _KIND_RECORD = "undo"
 _KIND_CONSUMED = "consumed"
+# A checkpoint is a THIRD ROW KIND in this same file, not a second file. It
+# needs no new hardening code, no new crash semantics and no new parser -- it
+# inherits the 0600 append-only machinery that already exists, and a build that
+# predates it skips the rows it does not recognise, exactly as it skips a
+# half-written line.
+_KIND_CHECKPOINT = "checkpoint"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,12 @@ class UndoEntry:
     # than a reference to content. Stored so a UI, the CLI and audit_payload()
     # can all agree on what must never be printed.
     sensitive: tuple[str, ...] = ()
+    # The checkpoint window this row belongs to, DECLARED by the step rather
+    # than inferred later, because only the caller knows where a logical unit
+    # of work begins and ends. Membership lives on the row rather than in a
+    # list on the checkpoint so that adding an entry is one append, not a
+    # rewrite of a growing row.
+    checkpoint_id: str | None = None
 
     @property
     def trusted(self) -> bool:
@@ -152,6 +165,7 @@ class UndoEntry:
             "tool": self.action.tool,
             "args": _jsonable(self.action.args),
             "sensitive": list(self.sensitive),
+            "checkpoint_id": self.checkpoint_id,
             "context": redact(_jsonable(self.context)),
             "fingerprints": _jsonable(self.fingerprints),
         }
@@ -174,6 +188,7 @@ class UndoEntry:
             "sensitive": list(self.sensitive),
             "fingerprint_count": len(self.fingerprints),
             "stale": self.stale,
+            "checkpoint_id": self.checkpoint_id,
         }
 
     @classmethod
@@ -198,16 +213,40 @@ class UndoEntry:
             sensitive=tuple(
                 str(k) for k in (row.get("sensitive") or []) if isinstance(k, (str, int))
             ),
+            checkpoint_id=_tool_name(row.get("checkpoint_id")),
         )
 
 
 class UndoJournal:
-    """Append-only stack of inverses, persisted so undo survives a restart."""
+    """Append-only stack of inverses, persisted so undo survives a restart.
+
+    THREAD SAFETY
+    -------------
+    Every public method takes an internal `threading.RLock`. Internal, not
+    caller-held, and that distinction is the whole point: a lock the caller has
+    to remember is a lock the second caller forgets, and the second caller here
+    is a background job runner on a worker thread while the loop thread is
+    reading the same journal to answer "undo that".
+
+    Reentrant because the public methods genuinely nest -- `peek` calls
+    `_refresh` calls `reload`, and `pop` calls both `peek` and `commit`. A
+    plain Lock would deadlock on the first `pop()`.
+
+    The FILE was already safe: `open_append` is O_APPEND and the lines are
+    small enough to land atomically. What was not safe is `_entries`,
+    `_consumed` and `_loaded_sig` -- `reload()` empties both containers before
+    refilling them, so a concurrent `peek()` could see an empty journal and
+    report there is nothing to undo, which is the most expensive possible lie
+    this file can tell.
+    """
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path) if path is not None else DEFAULT_UNDO_PATH
+        self._lock = threading.RLock()
         self._entries: list[UndoEntry] = []
         self._consumed: set[str] = set()
+        self._checkpoints: dict[str, Checkpoint] = {}
+        self._seal_reasons: dict[str, str] = {}
         self._loaded_sig: tuple[int, int] | None = None
         self.reload()
 
@@ -219,6 +258,7 @@ class UndoJournal:
         context: Mapping[str, Any] | None = None,
         *,
         produced_by: str,
+        checkpoint_id: str | None = None,
     ) -> UndoEntry:
         """Persist the inverse of a mutation that HAS ALREADY HAPPENED.
 
@@ -246,9 +286,11 @@ class UndoJournal:
             fingerprints=_fingerprint_all(_candidate_paths(action.args, ctx)),
             produced_by=_tool_name(produced_by),
             sensitive=_sensitive_keys(action.args),
+            checkpoint_id=_tool_name(checkpoint_id),
         )
-        self._append(entry.to_json())
-        self._entries.append(entry)
+        with self._lock:
+            self._append(entry.to_json())
+            self._entries.append(entry)
         return entry
 
     # --- reading ----------------------------------------------------------
@@ -268,11 +310,12 @@ class UndoJournal:
         reasons an undo does not run -- dry run, a failed validation, a stale
         world, the user saying no -- are reasons to keep it.
         """
-        self._refresh()
-        for entry in reversed(self._entries):
-            if entry.id not in self._consumed:
-                return self._checked(entry)
-        return None
+        with self._lock:
+            self._refresh()
+            for entry in reversed(self._entries):
+                if entry.id not in self._consumed:
+                    return self._checked(entry)
+            return None
 
     def commit(self, entry: UndoEntry) -> bool:
         """Mark `entry` consumed. Call this ONLY once the undo actually ran.
@@ -283,12 +326,13 @@ class UndoJournal:
         but it is the CALLER's decision, because only the caller knows whether
         anything happened.
         """
-        self._refresh()
-        if entry.id in self._consumed:
-            return False
-        self._consumed.add(entry.id)
-        self._append({"kind": _KIND_CONSUMED, "id": entry.id, "at": time.time()})
-        return True
+        with self._lock:
+            self._refresh()
+            if entry.id in self._consumed:
+                return False
+            self._consumed.add(entry.id)
+            self._append({"kind": _KIND_CONSUMED, "id": entry.id, "at": time.time()})
+            return True
 
     def pop(self) -> UndoEntry | None:
         """peek() and commit() in one call, for a caller that genuinely wants
@@ -299,30 +343,33 @@ class UndoJournal:
         it throws the real undo record away while undoing precisely nothing.
         Use peek -> run -> commit.
         """
-        entry = self.peek()
-        if entry is None:
-            return None
-        self.commit(entry)
-        return entry
+        with self._lock:
+            entry = self.peek()
+            if entry is None:
+                return None
+            self.commit(entry)
+            return entry
 
     def history(self, n: int = 10) -> list[UndoEntry]:
         """Up to `n` live entries, newest first. Consumed entries are excluded:
         they are history for the audit log, not for "undo that"."""
         if n <= 0:
             return []
-        self._refresh()
-        out: list[UndoEntry] = []
-        for entry in reversed(self._entries):
-            if entry.id in self._consumed:
-                continue
-            out.append(entry)
-            if len(out) >= n:
-                break
-        return out
+        with self._lock:
+            self._refresh()
+            out: list[UndoEntry] = []
+            for entry in reversed(self._entries):
+                if entry.id in self._consumed:
+                    continue
+                out.append(entry)
+                if len(out) >= n:
+                    break
+            return out
 
     def __len__(self) -> int:
-        self._refresh()
-        return sum(1 for e in self._entries if e.id not in self._consumed)
+        with self._lock:
+            self._refresh()
+            return sum(1 for e in self._entries if e.id not in self._consumed)
 
     # --- staleness --------------------------------------------------------
 
@@ -362,8 +409,14 @@ class UndoJournal:
         """Re-read the journal from disk. Called on construction (so undo
         survives a restart) and whenever the file changes underneath us (the
         CLI and the voice loop are separate processes)."""
+        with self._lock:
+            self._reload_locked()
+
+    def _reload_locked(self) -> None:
         self._entries = []
         self._consumed = set()
+        self._checkpoints = {}
+        self._seal_reasons = {}
         self._loaded_sig = _signature(self.path)
         if not self.path.exists():
             return
@@ -393,25 +446,158 @@ class UndoJournal:
                         self._entries.append(UndoEntry.from_json(row))
                     except (KeyError, TypeError, ValueError):
                         continue
+                elif kind == _KIND_CHECKPOINT:
+                    # LAST ROW WINS. Sealing appends rather than rewriting, so
+                    # the file stays append-only and the history of when a
+                    # window was sealed survives for the audit log to read.
+                    cid = _tool_name(row.get("id"))
+                    if cid is None:
+                        continue
+                    self._checkpoints[cid] = Checkpoint(
+                        id=cid,
+                        job_id=_tool_name(row.get("job_id")),
+                        created_at=_float(row.get("at")),
+                        sealed=bool(row.get("sealed")),
+                    )
+                    reason = row.get("sealed_by")
+                    if isinstance(reason, str) and reason.strip():
+                        self._seal_reasons[cid] = reason
 
     def _refresh(self) -> None:
-        if _signature(self.path) != self._loaded_sig:
-            self.reload()
+        with self._lock:
+            if _signature(self.path) != self._loaded_sig:
+                self._reload_locked()
 
     def _append(self, row: Mapping[str, Any]) -> None:
         # 0700 dir, 0600 file, from the first byte: there must be no window in
         # which this file exists at the umask default. Anything that can write
         # here can make `daa undo` run a tool of its choosing.
-        secure_dir(self.path.parent)
-        line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
-        with open_append(self.path) as fh:
-            fh.write(line)
-            fh.flush()
-            os.fsync(fh.fileno())  # the crash we are insuring against is now
-        self._loaded_sig = _signature(self.path)
+        with self._lock:
+            secure_dir(self.path.parent)
+            line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+            with open_append(self.path) as fh:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())  # the crash we are insuring against is now
+            self._loaded_sig = _signature(self.path)
+
+    # --- checkpoints ------------------------------------------------------
+
+    def open_checkpoint(self, *, job_id: str | None = None, at: float | None = None) -> Checkpoint:
+        """Start a window. Entries recorded with this id belong to it.
+
+        A checkpoint is NOT a snapshot. daa cannot snapshot macOS, and a
+        checkpoint that implies it can is the same category of lie as a
+        readback that omits a consequence. It is a named marker plus the window
+        of journal entries recorded after it -- so rolling it back is N
+        individually re-validated inverses, not one magic restore.
+        """
+        checkpoint = Checkpoint(
+            id=uuid.uuid4().hex[:12],
+            job_id=_tool_name(job_id),
+            created_at=time.time() if at is None else float(at),
+        )
+        with self._lock:
+            self._append(_checkpoint_row(checkpoint, None))
+            self._checkpoints[checkpoint.id] = checkpoint
+        return checkpoint
+
+    def seal_checkpoint(self, checkpoint_id: str, reason: str) -> Checkpoint | None:
+        """Mark that something irreversible happened inside this window.
+
+        Sealing does not disable rollback; it CHANGES THE SENTENCE:
+
+            unsealed: "I can put that back."
+            sealed:   "I can put back the files, but the email has already gone."
+
+        That is the claim checkpoints rest on. They do not make irreversible
+        things reversible. They make the boundary speakable.
+        """
+        with self._lock:
+            self._refresh()
+            existing = self._checkpoints.get(checkpoint_id)
+            if existing is None:
+                return None
+            sealed = Checkpoint(
+                id=existing.id,
+                job_id=existing.job_id,
+                entry_ids=existing.entry_ids,
+                created_at=existing.created_at,
+                sealed=True,
+            )
+            self._append(_checkpoint_row(sealed, reason))
+            self._checkpoints[sealed.id] = sealed
+            if reason:
+                self._seal_reasons[sealed.id] = reason
+            return sealed
+
+    def checkpoint(self, checkpoint_id: str) -> Checkpoint | None:
+        """The checkpoint, with `entry_ids` filled in from the rows that claim
+        membership. Membership is derived rather than stored on the checkpoint
+        row so that recording a step is one append instead of a rewrite."""
+        with self._lock:
+            self._refresh()
+            found = self._checkpoints.get(checkpoint_id)
+            if found is None:
+                return None
+            ids = tuple(e.id for e in self._entries if e.checkpoint_id == checkpoint_id)
+            return Checkpoint(
+                id=found.id,
+                job_id=found.job_id,
+                entry_ids=ids,
+                created_at=found.created_at,
+                sealed=found.sealed,
+            )
+
+    def checkpoints(self) -> list[Checkpoint]:
+        """Every checkpoint, oldest first, with membership filled in."""
+        with self._lock:
+            self._refresh()
+            out = [self.checkpoint(cid) for cid in self._checkpoints]
+            return sorted((c for c in out if c is not None), key=lambda c: c.created_at)
+
+    def seal_reason(self, checkpoint_id: str) -> str | None:
+        """The SPOKEN reason a window was sealed -- "the email has already
+        gone". Kept here rather than on the frozen `Checkpoint` contract,
+        which has no field for it."""
+        with self._lock:
+            self._refresh()
+            return self._seal_reasons.get(checkpoint_id)
+
+    def window(self, checkpoint_id: str) -> list[UndoEntry]:
+        """The un-consumed entries in this window, NEWEST FIRST and freshness
+        checked -- i.e. in the order a rollback must replay them.
+
+        Reverse order is not a detail. Replaying a window forwards re-applies
+        the mutations in the order they happened, with each inverse fighting
+        the one after it.
+        """
+        with self._lock:
+            self._refresh()
+            out: list[UndoEntry] = []
+            for entry in reversed(self._entries):
+                if entry.checkpoint_id != checkpoint_id or entry.id in self._consumed:
+                    continue
+                out.append(self._checked(entry))
+            return out
+
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+
+def _checkpoint_row(checkpoint: Checkpoint, reason: str | None) -> dict[str, Any]:
+    return {
+        "kind": _KIND_CHECKPOINT,
+        "id": checkpoint.id,
+        "job_id": checkpoint.job_id,
+        "at": checkpoint.created_at,
+        "sealed": checkpoint.sealed,
+        # Redacted like every other free-text field written here: a seal reason
+        # is composed by a tool and tools quote their arguments.
+        "sealed_by": redact(str(reason)) if reason else None,
+    }
 
 
 def _signature(path: Path) -> tuple[int, int] | None:

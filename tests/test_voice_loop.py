@@ -1296,9 +1296,14 @@ def test_every_stage_of_the_path_uses_the_shared_builders():
     loop.run()
 
     kinds = [e.kind for e in events]
-    for kind in audit.EVENT_KINDS:
-        if kind == "undo":
-            continue
+    # The kinds ONE ORDINARY TURN must produce. `undo` needs an undo, and the
+    # grant/job/checkpoint/rollback/notice kinds need scoped consent or
+    # background work -- none of which a single foreground confirmation
+    # involves. Listing them here rather than skipping them keeps this test
+    # about "the loop uses the builders" instead of about EVENT_KINDS' length.
+    per_turn = {"judgment", "disposition", "confirmation", "execution"}
+    assert per_turn <= set(audit.EVENT_KINDS)
+    for kind in sorted(per_turn):
         assert kind in kinds, f"no {kind!r} event; the loop is still hand-rolling payloads"
 
 

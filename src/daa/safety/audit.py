@@ -58,15 +58,24 @@ __all__ = [
     "EVENT_KINDS",
     "MAX_STRING",
     "REDACTED_KEYS",
+    "VERBATIM_KEYS",
+    "VERBATIM_MAX",
     "JsonlAudit",
     "MemoryAudit",
     "NullAudit",
+    "checkpoint_event",
     "confirmation_event",
     "disposition_event",
     "execution_event",
+    "grant_event",
+    "grant_revoked_event",
+    "job_event",
+    "job_step_event",
     "judgment_event",
+    "notice_event",
     "record",
     "redact",
+    "rollback_event",
     "undo_event",
 ]
 
@@ -127,7 +136,43 @@ MAX_STRING = 240
 # The event kinds the loop is expected to write. Not enforced -- an unknown
 # kind is still logged -- but named here so `daa audit` and the tests have one
 # list to read, and so adding a stage to the loop means adding it here first.
-EVENT_KINDS = ("judgment", "disposition", "confirmation", "execution", "undo")
+EVENT_KINDS = (
+    "judgment",
+    "disposition",
+    "confirmation",
+    "execution",
+    "undo",
+    # Added with scoped grants and background jobs. A grant is answered once
+    # and spent many times, so the rows that reconstruct "who authorized what"
+    # are spread across a whole run rather than sitting in one record.
+    "grant",
+    "grant_revoked",
+    "job",
+    "job_step",
+    "checkpoint",
+    "rollback",
+    "notice",
+)
+
+# THE ONE EXEMPTION FROM LENGTH ELISION, and it is deliberate.
+#
+# `plan_summary` is the exact sentence the user heard before they said yes. A
+# scope object answers "what was permitted"; only this answers "what did they
+# consent to", which is the question actually asked six months later. It is
+# also the only string in this log that daa WROTE and SPOKE rather than
+# received: it is not tool output, not file contents, and not raw speech, so
+# the usual reason for eliding a long string does not apply to it.
+#
+# What still applies: every shape-based rule. A card number or an API key in a
+# readback is redacted exactly as it would be anywhere else, and the value is
+# still capped -- at VERBATIM_MAX rather than MAX_STRING -- so a pathological
+# grant cannot turn this into a way to dump a payload into the log.
+#
+# `goal` is NOT in here. A goal is the user's own words, and the user's own
+# words are content. It goes through the ordinary scrub, which means a long one
+# is elided and the readback beside it is what carries the meaning.
+VERBATIM_KEYS = frozenset({"plan_summary"})
+VERBATIM_MAX = 1000
 
 # --- shape-based redaction --------------------------------------------------
 # Things that are secrets wherever they turn up, including under a key we never
@@ -247,22 +292,28 @@ def redact(value: Any) -> Any:
     return _redact(value, content=False)
 
 
-def _redact(value: Any, *, content: bool) -> Any:
+def _redact(value: Any, *, content: bool, verbatim: bool = False) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): _redact(item, content=content or str(key).lower() in REDACTED_KEYS)
+            str(key): _redact(
+                item,
+                content=content or str(key).lower() in REDACTED_KEYS,
+                verbatim=verbatim or str(key).lower() in VERBATIM_KEYS,
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_redact(v, content=content) for v in value]
+        return [_redact(v, content=content, verbatim=verbatim) for v in value]
     if content:
+        # A key that is content-bearing wins over one that is verbatim. There
+        # is no arrangement of keys that turns a redaction off.
         return _summarize(value)
     if isinstance(value, str):
-        return scrub(value)
+        return scrub(value, limit=VERBATIM_MAX if verbatim else MAX_STRING)
     return value
 
 
-def scrub(text: str) -> str:
+def scrub(text: str, *, limit: int | None = None) -> str:
     """A string from a key we do NOT consider content-bearing, made safe(r).
 
     Length first -- anything past MAX_STRING is a payload however it is
@@ -270,7 +321,8 @@ def scrub(text: str) -> str:
     appear. This is the layer that catches a card number spoken aloud and
     carried into `targets` by a resolver that previews its own argument.
     """
-    if len(text) > MAX_STRING:
+    cap = MAX_STRING if limit is None else limit
+    if len(text) > cap:
         return f"<elided {len(text)} chars>"
     out = _CARD_RE.sub(_card_sub, text)
     out = _ID_RE.sub("<redacted id number>", out)
@@ -358,11 +410,37 @@ def _plain(value: Any) -> Any:
 # happens to include a file's contents.
 
 
+def _linkage(
+    grant_id: str | None,
+    warrant_id: str | None,
+    job_id: str | None,
+    step_index: int | None,
+) -> dict[str, Any]:
+    """The four fields that tie a row back to the bargain it ran under.
+
+    Hoisted to the TOP LEVEL of every payload rather than nested, for the same
+    reason `synthetic` is: the question asked six months later is "show me
+    everything that happened under this grant", and it should not need a JSON
+    path. All four are None on an ordinary foreground action, which is the
+    honest answer -- that action ran under a fresh confirmation, not a grant.
+    """
+    return {
+        "grant_id": grant_id,
+        "warrant_id": warrant_id,
+        "job_id": job_id,
+        "step_index": step_index,
+    }
+
+
 def judgment_event(
     action: ResolvedAction,
     assessment: RiskAssessment | None,
     *,
     latency_ms: float | None = None,
+    grant_id: str | None = None,
+    warrant_id: str | None = None,
+    job_id: str | None = None,
+    step_index: int | None = None,
 ) -> AuditEvent:
     """What Jev said about this invocation, in full.
 
@@ -390,11 +468,20 @@ def judgment_event(
             "confidence": getattr(assessment, "confidence", None),
             "latency_ms": latency_ms,
             "synthetic": bool(assessment.synthetic) if assessment else False,
+            **_linkage(grant_id, warrant_id, job_id, step_index),
         },
     )
 
 
-def disposition_event(action: ResolvedAction, disposition: Disposition) -> AuditEvent:
+def disposition_event(
+    action: ResolvedAction,
+    disposition: Disposition,
+    *,
+    grant_id: str | None = None,
+    warrant_id: str | None = None,
+    job_id: str | None = None,
+    step_index: int | None = None,
+) -> AuditEvent:
     return AuditEvent(
         kind="disposition",
         payload={
@@ -409,6 +496,7 @@ def disposition_event(action: ResolvedAction, disposition: Disposition) -> Audit
             # The assessment that authorized the tier, kept alongside it: the
             # tier alone says what we did, never what we believed.
             "assessment": disposition.assessment,
+            **_linkage(grant_id, warrant_id, job_id, step_index),
         },
     )
 
@@ -421,7 +509,19 @@ def confirmation_event(
     via: str,
     confidence: float | None = None,
     synthetic: bool = False,
+    grant_id: str | None = None,
+    warrant_id: str | None = None,
+    job_id: str | None = None,
+    step_index: int | None = None,
 ) -> AuditEvent:
+    """One answer to one confirmation.
+
+    `via` gained "grant" when scoped consent arrived. It is the difference
+    between "the user said yes" and "a grant said yes on their behalf", and it
+    is the single most important field in this record: a run that is all
+    `via="grant"` rows under one `grant_id` is exactly the habituation failure
+    the design is worried about, and this is what makes it countable.
+    """
     return AuditEvent(
         kind="confirmation",
         payload={
@@ -429,9 +529,10 @@ def confirmation_event(
             "targets": list(action.targets),
             "tier": tier,
             "granted": granted,
-            "via": via,          # "voice" | "visual" | "implicit"
+            "via": via,          # "voice" | "visual" | "grant" | "implicit"
             "confidence": confidence,
             "synthetic": synthetic,
+            **_linkage(grant_id, warrant_id, job_id, step_index),
         },
     )
 
@@ -446,6 +547,11 @@ def execution_event(
     undo: UndoAction | None = None,
     tier: Any = None,
     undo_id: str | None = None,
+    grant_id: str | None = None,
+    warrant_id: str | None = None,
+    job_id: str | None = None,
+    step_index: int | None = None,
+    checkpoint_id: str | None = None,
 ) -> AuditEvent:
     """What actually happened. `summary` and `error` are redacted on the way
     out -- both are written by tools, and tools quote their arguments."""
@@ -466,6 +572,8 @@ def execution_event(
             "undo_tool": undo.tool if undo else None,
             "undo_id": undo_id,
             "undoable": undo is not None,
+            "checkpoint_id": checkpoint_id,
+            **_linkage(grant_id, warrant_id, job_id, step_index),
         },
     )
 
@@ -506,3 +614,236 @@ def undo_event(
         "error": error,
     }
     return AuditEvent(kind="undo", payload=payload, at=at if at is not None else time.time())
+
+
+# --- grants, jobs, checkpoints ----------------------------------------------
+# The reconstruction requirement these exist to satisfy is a single query on
+# `grant_id`:
+#
+#     grant            id, goal, plan_summary (the EXACT spoken readback),
+#                      ceiling, granted_via, scope, budget, parent_id
+#       - job          job_id, grant_id, goal
+#          - per step  judgment + disposition + execution, each carrying
+#                      grant_id, warrant_id, job_id, step_index, tier, via
+#          - confirmation rows for every mid-run re-confirm, carrying parent_id
+#          - checkpoint / rollback rows
+#       - grant_revoked  reason, at, steps_completed
+#
+# Storing the spoken readback verbatim on the grant row is the load-bearing
+# part. "Who authorized what" is not answerable from a scope object; it is
+# answerable from the sentence the user actually heard before they said yes.
+
+
+def grant_event(grant: Any, *, granted: bool, tools: Sequence[str] = ()) -> AuditEvent:
+    """A scoped go-ahead, asked for and answered.
+
+    Written whether or not it was granted. A refused grant is as interesting as
+    an accepted one -- more so, because "the assistant asked for more than it
+    needed" is exactly the signal worth noticing, and it is invisible if only
+    the accepted ones are logged.
+    """
+    scope = getattr(grant, "scope", None)
+    budget = getattr(grant, "budget", None)
+    return AuditEvent(
+        kind="grant",
+        payload={
+            "grant_id": getattr(grant, "id", None),
+            "parent_id": getattr(grant, "parent_id", None),
+            "granted": granted,
+            "goal": getattr(grant, "goal", ""),
+            # The readback, verbatim. See VERBATIM_KEYS.
+            "plan_summary": getattr(grant, "plan_summary", ""),
+            "ceiling": getattr(grant, "ceiling", None),
+            "granted_via": getattr(grant, "granted_via", None),
+            "channel_cap": getattr(grant, "channel_cap", None),
+            "max_satisfiable": getattr(grant, "max_satisfiable", None),
+            "granted_at": getattr(grant, "granted_at", None),
+            "expires_at": getattr(grant, "expires_at", None),
+            "scope_tools": sorted(getattr(scope, "tools", ()) or ()),
+            "scope_origins": sorted(getattr(scope, "origins", ()) or ()),
+            "scope_apps": sorted(getattr(scope, "apps", ()) or ()),
+            "scope_paths": list(getattr(scope, "path_prefixes", ()) or ()),
+            "budget_steps": getattr(budget, "steps", None),
+            "budget_seconds": getattr(budget, "seconds", None),
+            "budget_spend_cents": getattr(budget, "spend_cents", None),
+            "briefed_consequences": sorted(getattr(grant, "briefed_consequences", ()) or ()),
+            # What was on the menu when the sentence was composed, so a reader
+            # can tell whether the readback named the worst of it.
+            "offered_tools": sorted(str(t) for t in tools),
+        },
+    )
+
+
+def grant_revoked_event(
+    *,
+    grant_id: str,
+    reason: str,
+    at: float | None = None,
+    steps_completed: int = 0,
+    job_id: str | None = None,
+    warrants_killed: int = 0,
+) -> AuditEvent:
+    """"Stop" landing. Always written, even when nothing was running, because
+    the interesting question is how often people stop us, not how often they
+    stop us successfully."""
+    return AuditEvent(
+        kind="grant_revoked",
+        payload={
+            "grant_id": grant_id,
+            "job_id": job_id,
+            "reason": reason,
+            "steps_completed": steps_completed,
+            "warrants_killed": warrants_killed,
+        },
+        at=at if at is not None else time.time(),
+    )
+
+
+def job_event(
+    *,
+    job_id: str,
+    status: Any,
+    goal: str = "",
+    grant_id: str | None = None,
+    steps_done: int = 0,
+    phase: str = "",
+    summary: str = "",
+    error: str | None = None,
+    at: float | None = None,
+) -> AuditEvent:
+    """A background job changing state. One row per transition, not per step."""
+    return AuditEvent(
+        kind="job",
+        payload={
+            "job_id": job_id,
+            "grant_id": grant_id,
+            "status": status,
+            "goal": goal,
+            "steps_done": steps_done,
+            "phase": phase,
+            "summary": summary,
+            "error": error,
+        },
+        at=at if at is not None else time.time(),
+    )
+
+
+def job_step_event(
+    *,
+    job_id: str,
+    step_index: int,
+    tool: str,
+    grant_id: str | None = None,
+    warrant_id: str | None = None,
+    authorized: bool = False,
+    via: str = "",
+    reason: str = "",
+    tier: Any = None,
+    at: float | None = None,
+) -> AuditEvent:
+    """One proposal from an agent generator, and what the loop did with it.
+
+    Written for REFUSED steps too. A job whose steps were mostly refused is a
+    job that was asking for things outside its grant, and that pattern only
+    exists in the log if the refusals are in it.
+    """
+    return AuditEvent(
+        kind="job_step",
+        payload={
+            "job_id": job_id,
+            "grant_id": grant_id,
+            "warrant_id": warrant_id,
+            "step_index": step_index,
+            "tool": tool,
+            "authorized": authorized,
+            "via": via,
+            "reason": reason,
+            "tier": tier,
+        },
+        at=at if at is not None else time.time(),
+    )
+
+
+def checkpoint_event(
+    *,
+    checkpoint_id: str,
+    job_id: str | None = None,
+    opened: bool = True,
+    sealed: bool = False,
+    sealed_by: str = "",
+    entry_count: int = 0,
+    at: float | None = None,
+) -> AuditEvent:
+    return AuditEvent(
+        kind="checkpoint",
+        payload={
+            "checkpoint_id": checkpoint_id,
+            "job_id": job_id,
+            "opened": opened,
+            "sealed": sealed,
+            "sealed_by": sealed_by,
+            "entry_count": entry_count,
+        },
+        at=at if at is not None else time.time(),
+    )
+
+
+def rollback_event(
+    *,
+    checkpoint_id: str,
+    attempted: int,
+    reversed_count: int,
+    stopped_reason: str = "",
+    sealed: bool = False,
+    job_id: str | None = None,
+    grant_id: str | None = None,
+    at: float | None = None,
+) -> AuditEvent:
+    """Undoing a whole window.
+
+    `attempted` and `reversed_count` are separate on purpose: a rollback that
+    stops at the first stale row is the CORRECT behaviour, and a log that only
+    recorded "rollback happened" could not tell that from one that reversed
+    everything.
+    """
+    return AuditEvent(
+        kind="rollback",
+        payload={
+            "checkpoint_id": checkpoint_id,
+            "job_id": job_id,
+            "grant_id": grant_id,
+            "attempted": attempted,
+            "reversed": reversed_count,
+            "stopped_reason": stopped_reason,
+            "sealed": sealed,
+        },
+        at=at if at is not None else time.time(),
+    )
+
+
+def notice_event(
+    *,
+    job_id: str,
+    spoken: bool,
+    urgency: str = "normal",
+    reason: str = "",
+    pending: int = 0,
+    at: float | None = None,
+) -> AuditEvent:
+    """A deferred report, spoken or dropped.
+
+    The TEXT is deliberately absent. A notice is written to be spoken, which
+    means it quotes whatever the job was working on, which means it is content
+    by the same rule that redacts `summary`.
+    """
+    return AuditEvent(
+        kind="notice",
+        payload={
+            "job_id": job_id,
+            "spoken": spoken,
+            "urgency": urgency,
+            "reason": reason,
+            "pending": pending,
+        },
+        at=at if at is not None else time.time(),
+    )

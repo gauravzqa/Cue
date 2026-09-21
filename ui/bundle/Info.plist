@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>daa</string>
+    <key>CFBundleDisplayName</key>
+    <string>daa</string>
+    <key>CFBundleExecutable</key>
+    <string>daadock</string>
+    <key>CFBundleIdentifier</key>
+    <string>ai.daa.dock</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>daa listens when you hold the push-to-talk key, or continuously if you turn always-on on. Speech is transcribed on this Mac and is not written down until daa decides it was addressed to it.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>daa transcribes what you say on this Mac, using Apple's on-device speech models. Nothing is sent to Apple.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>daa runs AppleScript to control other apps on your behalf. Every script is shown to you in full and has to be approved by hand before it runs.</string>
+</dict>
+</plist>

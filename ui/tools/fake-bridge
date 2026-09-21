@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""A fake `daa bridge`, for looking at the dock without running anything real.
+
+This speaks the whole wire protocol and touches **nothing**: no keys, no
+network, no tools, no files outside this script. It exists so the approval card
+-- the screen that matters -- can be looked at, demoed and argued about before
+the real Python side implements `daa bridge`, and so that a change to the card
+can be checked without pointing a live assistant at the machine.
+
+It ignores its argv entirely, so it can stand in for the interpreter:
+
+    DAA_PYTHON=ui/tools/fake-bridge build/daa.app/Contents/MacOS/daadock
+
+Type a phrase into the dock to drive it:
+
+    script      a CONFIRM_VISUAL card with a 3-line AppleScript
+    long        the same with a 400-line script (exercises the scroll gate)
+    synthetic   a card whose judgment is synthetic, i.e. FakeJev
+    live        a card with dryRun false
+    withdraw    a card that Python takes back after 3 seconds
+    task        a background job that reports progress
+    crash       exit(1), to watch the restart backoff
+    anything    an ordinary turn: thinking -> speaking -> execution
+"""
+
+import json
+import sys
+import threading
+import time
+import uuid
+
+OUT = sys.stdout
+LOCK = threading.Lock()
+
+
+def send(obj):
+    with LOCK:
+        OUT.write(json.dumps(obj, separators=(",", ":")) + "\n")
+        OUT.flush()
+
+
+def ev(method, **payload):
+    send({"t": "ev", "m": method, "p": payload})
+
+
+def state(phase, detail="", **extra):
+    ev("state", phase=phase, detail=detail, since=time.time(), **extra)
+
+
+def audit(kind, **payload):
+    ev("audit", kind=kind, id=uuid.uuid4().hex[:12], at=time.time(), payload=payload)
+
+
+SCRIPT = (
+    'tell application "Messages"\n'
+    '  send "on my way" to buddy "Alex"\n'
+    "end tell"
+)
+
+LONG_SCRIPT = "\n".join(
+    f'do shell script "echo step {i} of 400"' for i in range(1, 401)
+)
+
+
+def card(kind):
+    """Build a confirm.request payload."""
+    script = LONG_SCRIPT if kind == "long" else SCRIPT
+    return {
+        "tool": "run_applescript",
+        "tier": "CONFIRM_VISUAL",
+        "reason": "unrecoverable and not explicitly requested",
+        "phrase": "run a script that sends a message to Alex",
+        "verb": "run",
+        "explicit": False,
+        "dryRun": kind != "live",
+        "targets": [f"a script of {len(script.splitlines())} lines"],
+        "args": [
+            {"key": "script", "isProgram": True, "value": script},
+            {"key": "recipient", "isProgram": False, "value": "Alex"},
+        ],
+        "consequences": {"send": "sending this text: 'on my way'"},
+        "assessment": {
+            "blastRadius": 2.4,
+            "unrecoverable": 0.81,
+            "explicitlyRequested": 0.19,
+            "targetConfidence": "probable",
+            "confidence": 0.77,
+            "synthetic": kind == "synthetic",
+        },
+        "expiresInMs": 90_000,
+    }
+
+
+class Bridge:
+    def __init__(self):
+        self.pending = {}
+        self.always_on = False
+
+    # -- outbound ------------------------------------------------------
+
+    def ready(self):
+        ev(
+            "ready",
+            daa="0.1.0-fake",
+            dryRun=True,
+            alwaysOn=False,
+            jevLive=False,
+            providers={
+                "mic": "fake",
+                "stt": "fake",
+                "tts": "fake",
+                "llm": "fake",
+                "jev": "fake",
+            },
+            tools=[
+                {"name": "run_applescript", "floor": "CONFIRM_VISUAL"},
+                {"name": "move_file", "floor": "CONFIRM_VOICE"},
+                {"name": "open_app", "floor": "ANNOUNCE"},
+                {"name": "read_clipboard", "floor": "SILENT"},
+            ],
+            missing=["this is the fake bridge -- nothing here is real"],
+        )
+        state("idle")
+
+    def raise_card(self, kind):
+        cid = "cf_" + uuid.uuid4().hex[:8]
+        self.pending[cid] = kind
+        state("awaiting", "waiting for approval")
+        send({"t": "req", "id": cid, "m": "confirm.request", "p": card(kind)})
+        if kind == "withdraw":
+            def take_it_back():
+                time.sleep(3)
+                if cid in self.pending:
+                    ev("confirm.cancel", id=cid, reason="the fake bridge changed its mind")
+                    self.pending.pop(cid, None)
+                    state("idle")
+            threading.Thread(target=take_it_back, daemon=True).start()
+
+    def ordinary_turn(self, text):
+        audit("woke", text=text, addressed_p=0.91)
+        state("thinking", "looking at what you said")
+        time.sleep(0.6)
+        audit(
+            "disposition",
+            tool="move_file",
+            tier="ANNOUNCE",
+            reason="recoverable and explicitly requested",
+        )
+        state("speaking", "Moved 3 files to Archive.")
+        audit("spoke", text="Moved 3 files to Archive.")
+        audit(
+            "execution",
+            tool="move_file",
+            undo_id="u" + uuid.uuid4().hex[:6],
+            dry_run=True,
+            summary="Dry run: I would move 3 files to Archive.",
+        )
+        time.sleep(0.4)
+        state("idle")
+
+    def background_task(self):
+        tid = "t" + uuid.uuid4().hex[:6]
+
+        def work():
+            for i in range(11):
+                ev(
+                    "task.update",
+                    id=tid,
+                    title="indexing the Downloads folder",
+                    progress=i / 10,
+                    cancellable=True,
+                    startedAt=time.time(),
+                    tier="SILENT",
+                )
+                state("working", "indexing", tasks=[{"id": tid, "title": "indexing"}])
+                time.sleep(0.5)
+            ev("task.done", id=tid, outcome="indexed 1,204 files")
+            state("idle")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # -- inbound -------------------------------------------------------
+
+    def handle(self, frame):
+        kind = frame.get("t")
+        if kind == "req":
+            self.request(frame)
+        elif kind == "res":
+            self.response(frame)
+        elif kind == "ev":
+            self.event(frame)
+
+    def request(self, f):
+        method, fid = f.get("m"), f.get("id")
+        if method == "session.hello":
+            send({"t": "res", "id": fid, "ok": True,
+                  "p": {"proto": 1, "daa": "0.1.0-fake"}})
+            self.ready()
+        elif method == "control.alwaysOn":
+            self.always_on = bool(f.get("p", {}).get("on"))
+            send({"t": "res", "id": fid, "ok": True, "p": {"on": self.always_on}})
+        elif method == "undo.last":
+            # Undo never runs below CONFIRM_VOICE, so the honest answer is
+            # that daa is ASKING, not that it reversed anything.
+            send({"t": "res", "id": fid, "ok": True,
+                  "p": {"ok": False,
+                        "summary": "Asking out loud before I reverse that."}})
+        elif method == "session.shutdown":
+            send({"t": "res", "id": fid, "ok": True, "p": {}})
+            OUT.flush()
+            sys.exit(0)
+        else:
+            send({"t": "res", "id": fid, "ok": False,
+                  "err": {"code": "unknown", "message": f"fake bridge: {method}"}})
+
+    def response(self, f):
+        """A `confirm.result`. The token is single-use here too."""
+        fid = f.get("id")
+        kind = self.pending.pop(fid, None)
+        if kind is None:
+            # An unknown, already-consumed or stale id is dropped and audited
+            # as an error. The model cannot mint one; nor can a forged row.
+            audit("error", where="confirm", error=f"unknown confirmation token {fid}")
+            print(f"fake-bridge: dropped a stale confirm.result {fid}", file=sys.stderr)
+            return
+        p = f.get("p") or {}
+        granted = bool(p.get("granted"))
+        reason = p.get("reason", "")
+        audit("visual_confirm", tool="run_applescript", granted=granted,
+              target_count=1, reason=reason)
+        if granted:
+            audit("execution", tool="run_applescript", dry_run=kind != "live",
+                  undo_id="u" + uuid.uuid4().hex[:6],
+                  summary=("Dry run: I would run the script."
+                           if kind != "live" else "Ran the script."))
+        else:
+            audit("abandoned", tool="run_applescript", reason=reason or "not approved")
+            audit("spoke", text="Okay, leaving it.")
+        state("idle")
+
+    def event(self, f):
+        method = f.get("m")
+        p = f.get("p") or {}
+        if method in ("control.text", "mic.utterance"):
+            text = (p.get("text") or "").strip().lower()
+            if text == "crash":
+                print("fake-bridge: exiting on purpose", file=sys.stderr)
+                sys.exit(1)
+            if text in ("script", "long", "synthetic", "live", "withdraw"):
+                audit("woke", text=text, addressed_p=0.98)
+                self.raise_card(text)
+            elif text == "task":
+                self.background_task()
+            else:
+                threading.Thread(
+                    target=self.ordinary_turn, args=(p.get("text", ""),), daemon=True
+                ).start()
+        elif method == "control.cancel":
+            state("idle")
+        elif method == "mic.onset":
+            pass
+
+
+def main():
+    print("fake-bridge: up. Nothing here is real.", file=sys.stderr)
+    bridge = Bridge()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            frame = json.loads(line)
+        except Exception as exc:  # a bad frame is skipped, never fatal
+            print(f"fake-bridge: bad frame ({exc})", file=sys.stderr)
+            continue
+        print(f"fake-bridge <- {frame.get('t')} {frame.get('m') or frame.get('id')}",
+              file=sys.stderr)
+        try:
+            bridge.handle(frame)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"fake-bridge: handler blew up: {exc}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

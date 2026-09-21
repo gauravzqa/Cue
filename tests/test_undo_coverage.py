@@ -15,16 +15,24 @@ Anything short of that is a missing undo, not a design decision.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
 
 from daa.config import Settings
 from daa.contracts import RiskTier, UndoAction
-from daa.tools import REGISTRY
 from daa.tools import files as files_mod
+from daa.tools import install
+from daa.tools.registry import ToolRegistry
 
-LIVE = Settings(dry_run=False)
+# EVERY capability, not the default registry. The module-global REGISTRY is
+# built from default Settings, where browser and computer use are switched
+# off -- so reading it here would quietly exempt the 16 newest and most
+# dangerous tools from the one invariant that exists to catch exactly them.
+# A coverage test that shrinks when you add capabilities is worse than none.
+LIVE = Settings(dry_run=False, enable_browser=True, enable_computer_use=True)
+REGISTRY = install(ToolRegistry(), LIVE)
 GATED = [spec for spec in REGISTRY.specs() if spec.floor >= RiskTier.CONFIRM_VOICE]
 
 
@@ -94,7 +102,36 @@ PROBES = {
 
 # Tools that genuinely have no inverse. Kept as data so the list cannot grow
 # without a reviewer seeing it in the diff.
-IRREVERSIBLE = {"run_shortcut", "run_applescript"}
+IRREVERSIBLE = {
+    "run_shortcut",
+    "run_applescript",
+    # Computer use. A click has no inverse: Cmd-Z is not an inverse, it is
+    # another click whose meaning the app defines, and it can just as easily
+    # undo something the user did by hand a minute ago.
+    "ui_click",
+    "ui_type",
+    "ui_key",
+    "ui_sequence",
+    # Browser. Same shape -- the page decides what a click meant, and a POST
+    # that has already reached a server is not coming back because we regret
+    # it. submit_form additionally sits at CONFIRM_VISUAL.
+    "click_element",
+    "submit_form",
+}
+
+# A third category the binary above could not express, and `fill_field` is the
+# first tool to need it: undoable on one path, not on the other, by design.
+# Typing into an EMPTY field undoes by clearing it. Typing over an existing
+# value cannot undo, because the only possible inverse is "put the old value
+# back", and the old value of a text field is routinely a half-typed password,
+# a one-time code or a card number -- writing it to `~/.daa/undo.jsonl` to buy
+# an undo would be a worse bug than having no undo.
+#
+# The price of being in here is HIGHER than being in IRREVERSIBLE, not lower:
+# an irreversible tool declares itself once, statically, and is done. These
+# must say the loss OUT LOUD, in the sentence the user answers, on exactly the
+# invocations where it applies -- which is the thing a static flag cannot do.
+CONDITIONALLY_UNDOABLE = {"fill_field"}
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +145,11 @@ def test_there_are_gated_tools_to_check():
 
 @pytest.mark.parametrize("spec", GATED, ids=lambda s: s.name)
 def test_gated_tools_are_covered_by_a_probe_or_declared_irreversible(spec):
-    assert spec.name in PROBES or spec.name in IRREVERSIBLE, (
+    assert (
+        spec.name in PROBES
+        or spec.name in IRREVERSIBLE
+        or spec.name in CONDITIONALLY_UNDOABLE
+    ), (
         f"{spec.name} runs at {spec.floor.name} but has neither an undo probe nor an "
         "explicit irreversible declaration"
     )
@@ -237,3 +278,38 @@ def test_failed_mutations_do_not_invent_an_undo(tmp_path):
     tool = _fresh("move_files")
     result = tool.run(tool.resolve(sources=[str(tmp_path / "ghost")], destination=str(tmp_path)))
     assert result.ok is False and result.undo is None
+
+
+@pytest.mark.parametrize("name", sorted(CONDITIONALLY_UNDOABLE), ids=str)
+def test_a_conditionally_undoable_tool_says_so_when_it_cannot_undo(name):
+    """The sentence the user answers must carry the loss.
+
+    A tool that is undoable on one path and not on the other cannot declare
+    itself with a flag -- the flag would be wrong half the time. So the whole
+    guarantee lives in the readback, and this asserts that the readback
+    actually carries it rather than trusting a comment that says it does.
+    """
+    tool = REGISTRY.get(name)
+    src = inspect.getsource(type(tool))
+
+    assert "consequences" in src, f"{name} never populates consequences"
+    # The specific promise: on the lossy path it tells the user the old value
+    # is not coming back.
+    lossy = [
+        line
+        for line in src.splitlines()
+        if "put back" in line or "cannot be undone" in line or "not be able" in line
+    ]
+    assert lossy, (
+        f"{name} is conditionally undoable but its source never tells the user "
+        "that the lossy path loses something. The consent is then uninformed "
+        "on exactly the invocation where it matters."
+    )
+
+
+def test_a_conditionally_undoable_tool_is_not_also_claiming_irreversibility():
+    """Both at once would mean the static flag is wrong on the undoable path."""
+    assert not (CONDITIONALLY_UNDOABLE & IRREVERSIBLE)
+    for name in CONDITIONALLY_UNDOABLE:
+        assert REGISTRY.get(name).irreversible is False
+        assert REGISTRY.get(name).spec.floor >= RiskTier.CONFIRM_VOICE

@@ -42,9 +42,49 @@ TOOL_CLASSES: tuple[type[BaseTool], ...] = (
 )
 
 
+def optional_tool_classes(settings: Settings | None = None) -> tuple[type, ...]:
+    """Capability packages, included only when switched on.
+
+    Imported INSIDE this function, never at module scope. `daa.tools.browser`
+    pulls Playwright, which is an optional extra and a 557 MB browser download;
+    making `import daa.tools` depend on it would break a bare clone and the
+    keyless dev loop for everyone who never asked for a browser.
+
+    An enabled-but-unimportable package is reported, not swallowed: silently
+    registering nothing would leave the user saying "open a tab" to an
+    assistant that has no idea what a tab is and no idea why.
+    """
+    s = settings if settings is not None else Settings.load()
+    extra: list[type] = []
+    missing: list[str] = []
+
+    if getattr(s, "enable_computer_use", False):
+        try:
+            from daa.tools.computer import COMPUTER_TOOL_CLASSES
+
+            extra.extend(COMPUTER_TOOL_CLASSES)
+        except ImportError as exc:
+            missing.append(f"computer use: {exc}")
+
+    if getattr(s, "enable_browser", False):
+        try:
+            from daa.tools.browser import BROWSER_TOOL_CLASSES
+
+            extra.extend(BROWSER_TOOL_CLASSES)
+        except ImportError as exc:
+            missing.append(f"browser: {exc}")
+
+    optional_tool_classes.missing = tuple(missing)  # type: ignore[attr-defined]
+    return tuple(extra)
+
+
+optional_tool_classes.missing = ()  # type: ignore[attr-defined]
+
+
 def make_tools(settings: Settings | None = None) -> list[Tool]:
     """Fresh instances bound to one Settings -- how tests get a dry_run=False world."""
-    return [cls(settings) for cls in TOOL_CLASSES]
+    classes = TOOL_CLASSES + optional_tool_classes(settings)
+    return [cls(settings) for cls in classes]
 
 
 def install(registry: ToolRegistry, settings: Settings | None = None) -> ToolRegistry:

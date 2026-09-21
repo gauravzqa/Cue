@@ -24,6 +24,22 @@ class Settings:
     dry_run: bool = True
     stt_local: bool = True
 
+    # Capability switches. OFF by default, and that is not timidity: each of
+    # these adds a class of action the model can reach for, and a capability
+    # that switches itself on because a package happens to be importable is a
+    # capability nobody decided to have. Turning one on is a sentence the user
+    # says once, in a file, deliberately.
+    enable_browser: bool = False
+    enable_computer_use: bool = False
+
+    # Grants and jobs. Short on purpose -- a grant is a bounded bargain, and
+    # the cheapest way for one to become blanket permission is to outlive the
+    # situation the user was picturing when they agreed to it.
+    grant_ttl_s: float = 300.0
+    warrant_ttl_s: float = 30.0
+    notice_quiet_s: float = 20.0
+    max_jobs: int = 1
+
     # Jev thresholds. Calibrated probabilities mean these are tunable against
     # real outcomes rather than guessed -- see evals/. Defaults are deliberately
     # cautious: we would rather ask twice than act once on a mishearing.
@@ -56,6 +72,8 @@ class Settings:
             always_on=_flag("DAA_ALWAYS_ON", False),
             dry_run=_flag("DAA_DRY_RUN", True),
             stt_local=_flag("DAA_STT_LOCAL", True),
+            enable_browser=_flag("DAA_ENABLE_BROWSER", False),
+            enable_computer_use=_flag("DAA_ENABLE_COMPUTER_USE", False),
         )
 
     @property

@@ -491,12 +491,22 @@ def test_the_builders_speak_the_verb_and_consequences_the_user_heard(sink: Jsonl
 def test_undo_is_a_first_class_event_kind() -> None:
     assert "undo" in EVENT_KINDS
     assert undo_event(tool="move_files", ok=True).kind == "undo"
+    # Pinned rather than open-ended: a new kind should be a deliberate edit
+    # here, because EVENT_KINDS is what `daa audit` and the readers downstream
+    # of it are written against.
     assert set(EVENT_KINDS) == {
         "judgment",
         "disposition",
         "confirmation",
         "execution",
         "undo",
+        "grant",
+        "grant_revoked",
+        "job",
+        "job_step",
+        "checkpoint",
+        "rollback",
+        "notice",
     }
 
 
