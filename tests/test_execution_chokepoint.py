@@ -47,12 +47,15 @@ def _run_calls(path: pathlib.Path) -> list[tuple[str, str, int]]:
             push = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             if push:
                 stack.append(node)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if node.func.attr == "run":
-                    recv = node.func.value
-                    name = getattr(recv, "id", None) or getattr(recv, "attr", None) or "?"
-                    if name not in IGNORED_RECEIVERS:
-                        found.append((name, _qualname(stack), node.lineno))
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run"
+            ):
+                recv = node.func.value
+                name = getattr(recv, "id", None) or getattr(recv, "attr", None) or "?"
+                if name not in IGNORED_RECEIVERS:
+                    found.append((name, _qualname(stack), node.lineno))
             self.generic_visit(node)
             if push:
                 stack.pop()
