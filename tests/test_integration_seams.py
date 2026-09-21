@@ -84,3 +84,29 @@ def test_every_mutating_tool_floor_survives_a_maximally_reassuring_judgment():
             assert d.tier >= RiskTier.CONFIRM_VOICE, (
                 f"{spec.name} became silently executable on a confident judgment"
             )
+
+
+def test_an_approved_visual_action_does_not_also_speak_a_refusal():
+    """Regression: `daa say` prints spoken lines AFTER the turn completes.
+
+    `_confirm_visual` used to speak "that has to be approved on screen, type
+    yes there" as a pre-announcement. Because the CLI batches spoken output,
+    it surfaced after the user had already typed yes -- so an APPROVED action
+    was followed by a sentence refusing it. The card's own header carries that
+    message, and that branch is only reachable when a console exists.
+    """
+    from daa.voice import loop as loop_mod
+
+    assert not hasattr(loop_mod, "_NEEDS_SCREEN"), (
+        "the pre-announcement is back; it contradicts an approval under `daa say`"
+    )
+    src = pathlib.Path(loop_mod.__file__).read_text()
+    body = src.split("def _confirm_visual", 1)[1].split("\n    def ", 1)[0]
+    assert "_NO_SCREEN" in body, "the no-console refusal must stay"
+    # Every remaining spoken line in this method must be a REFUSAL: no console
+    # (_NO_SCREEN) or the user cancelled. Nothing is said on the approved path,
+    # because the approved path continues to _execute, which does the talking.
+    spoken = [ln.strip() for ln in body.splitlines() if "_speak(" in ln]
+    assert len(spoken) == 2, f"expected the two refusal lines, got {spoken}"
+    assert any("_NO_SCREEN" in s for s in spoken)
+    assert any("leaving it" in s for s in spoken)

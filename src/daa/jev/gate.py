@@ -80,8 +80,19 @@ class AddressGate:
         # "have they stopped talking" -- and the loop needs both: an addressed
         # utterance that is still mid-sentence must keep the mic open rather
         # than be discarded as not-for-me.
+        # A SYNTHETIC judgment may not open a hot mic. FakeJev answers an
+        # unseeded noul at 0.5 -- maximum uncertainty -- which used to sit
+        # safely below the 0.85 threshold. Calibrating that threshold against
+        # evals/ moved it to 0.42, and "I don't know" is now ABOVE the bar: a
+        # keyless machine in always-on mode would wake on every sound in the
+        # room. Push-to-talk is unaffected, because there the user pressing a
+        # key IS the address signal and no judgment is being trusted.
+        wake = addressed_p >= self._settings.address_gate
+        if wake and answers.synthetic and getattr(self._settings, "always_on", False):
+            wake = False
+
         return WakeDecision(
-            wake=addressed_p >= self._settings.address_gate,
+            wake=wake,
             end_of_turn=end_p >= self._settings.end_of_turn,
             needs_planner=planner_p >= self._settings.needs_planner,
             addressed_p=addressed_p,

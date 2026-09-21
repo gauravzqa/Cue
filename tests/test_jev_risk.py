@@ -1,4 +1,4 @@
-"""The risk gate: resolved targets in, minimum confidence out, fail closed."""
+"""The risk gate: resolved targets in, DANGER confidence out, fail closed."""
 
 from __future__ import annotations
 
@@ -124,7 +124,19 @@ def test_blast_radius_is_continuous_not_bucketed():
     assert a.blast_radius == pytest.approx(1.75)
 
 
-# --- confidence is a MINIMUM ---------------------------------------------
+# --- confidence is a MINIMUM over the DANGER answers ----------------------
+#
+# It used to be a minimum over all four. Live Jev on `spotlight_search` answered
+# blast_radius 0.02 at 0.98 confidence and unrecoverable 0.02 at 0.96 -- both
+# very sure the action is harmless -- next to 0.38 on "did they ask for this"
+# and 0.42 on "is this the right target". A flat minimum made that 0.38 the
+# assessment's confidence, policy escalated, and the product asked permission
+# before running a Spotlight search.
+#
+# The two that were dropped are not ignored: each already drives its own rule
+# in safety/policy.py (the inferred bump and the guessing bump), so folding
+# their uncertainty into a global minimum charged it twice. Both are still
+# recorded on the assessment for the audit log.
 
 
 def test_confidence_is_the_minimum_across_contributing_answers():
@@ -142,6 +154,7 @@ def test_confidence_is_the_minimum_across_contributing_answers():
             ),
         }
     )
+    # min(blast 0.9, unrecoverable 0.6) -- the two danger answers.
     assert a.confidence == pytest.approx(0.6)
 
 
@@ -206,3 +219,101 @@ def test_the_failed_closed_blast_radius_is_the_top_of_the_scale():
 def test_an_unseeded_provider_yields_zero_confidence_not_a_confident_pass():
     a, _ = assess()
     assert a.confidence == 0.0
+
+
+def test_doubt_about_intent_or_target_does_not_become_doubt_about_danger():
+    """THE measured regression, as a unit test.
+
+    Both danger answers are near-certain that a Spotlight search is harmless.
+    All the uncertainty is in whether the user asked for it and whether we
+    picked the right file -- and for an action with a blast radius of 0.02,
+    being wrong about either costs one more search.
+    """
+    a, _ = assess(
+        {
+            Q.Q_BLAST_RADIUS: ScoreAnswer(
+                score=0.02, legend=tuple(Q.BLAST_RADIUS_LEVELS),
+                probabilities=(0.98, 0.02, 0.0, 0.0), confidence=0.98,
+            ),
+            # |0.02 - 0.5| * 2 == 0.96
+            Q.Q_UNRECOVERABLE: NoulAnswer(noul=0.02),
+            # |0.69 - 0.5| * 2 == 0.38 -- the number that used to win
+            Q.Q_EXPLICITLY_REQUESTED: NoulAnswer(noul=0.69),
+            Q.Q_TARGET_CONFIDENCE: ChoiceAnswer(
+                choice="probable", probabilities={"probable": 0.42}, confidence=0.42
+            ),
+        }
+    )
+    assert a.confidence == pytest.approx(0.96), "intent/target doubt leaked into the gate"
+    assert a.confidence >= 0.5, "a harmless search must not trip the low-confidence rule"
+
+
+def test_the_dropped_confidences_are_still_on_the_record():
+    """Dropped from the tier decision, not from the log. "Why didn't it ask
+    me?" is often answered by "it was only 38% sure you had asked for it"."""
+    a, _ = assess(
+        {
+            Q.Q_BLAST_RADIUS: ScoreAnswer(
+                score=0.02, legend=tuple(Q.BLAST_RADIUS_LEVELS),
+                probabilities=(0.98, 0.02, 0.0, 0.0), confidence=0.98,
+            ),
+            Q.Q_UNRECOVERABLE: NoulAnswer(noul=0.02),
+            Q.Q_EXPLICITLY_REQUESTED: NoulAnswer(noul=0.69),
+            Q.Q_TARGET_CONFIDENCE: ChoiceAnswer(
+                choice="probable", probabilities={"probable": 0.42}, confidence=0.42
+            ),
+        }
+    )
+    assert a.answer_confidence[Q.Q_EXPLICITLY_REQUESTED] == pytest.approx(0.38)
+    assert a.answer_confidence[Q.Q_TARGET_CONFIDENCE] == pytest.approx(0.42)
+    assert a.answer_confidence[Q.Q_BLAST_RADIUS] == pytest.approx(0.98)
+    assert set(a.answer_confidence) == {
+        Q.Q_BLAST_RADIUS,
+        Q.Q_UNRECOVERABLE,
+        Q.Q_EXPLICITLY_REQUESTED,
+        Q.Q_TARGET_CONFIDENCE,
+    }
+
+
+def test_the_detailed_assessment_is_still_a_risk_assessment():
+    """policy.decide() and the audit log both take RiskAssessment and must not
+    need to learn about the subclass."""
+    from daa.contracts import RiskAssessment
+    from daa.safety.audit import _plain
+
+    a, _ = assess()
+    assert isinstance(a, RiskAssessment)
+    assert _plain(a)["answer_confidence"], "the audit log flattens it for free"
+
+
+def test_an_uncertain_danger_answer_still_escalates():
+    """The rule that had to survive the fix: doubt about how much damage this
+    does is exactly the doubt that must be handed back to the human."""
+    a, _ = assess(
+        {
+            Q.Q_BLAST_RADIUS: ScoreAnswer(
+                score=0.1, legend=tuple(Q.BLAST_RADIUS_LEVELS),
+                probabilities=(0.3, 0.3, 0.2, 0.2), confidence=0.31,
+            ),
+            Q.Q_UNRECOVERABLE: NoulAnswer(noul=0.02),
+            Q.Q_EXPLICITLY_REQUESTED: NoulAnswer(noul=1.0),
+            Q.Q_TARGET_CONFIDENCE: ChoiceAnswer(
+                choice="certain", probabilities={"certain": 1.0}, confidence=1.0
+            ),
+        }
+    )
+    assert a.confidence == pytest.approx(0.31)
+
+    from daa.contracts import RiskTier, ToolSpec
+    from daa.safety import policy
+
+    # Even the most obviously read-only tool in the registry: if Jev cannot say
+    # how big this is, we ask. Nothing in the fix relaxed that.
+    read_only = ToolSpec(
+        name="spotlight_search", description="", params={},
+        floor=RiskTier.SILENT, tags=("files", "search", "read"),
+    )
+    # ACTION carries explicit=False, so the inferred bump owns the spoken
+    # reason here; the tier is what this test is about.
+    d = policy.decide(ACTION, read_only, a, Settings(dry_run=False))
+    assert d.tier >= RiskTier.CONFIRM_VOICE

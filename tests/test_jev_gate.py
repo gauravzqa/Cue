@@ -12,12 +12,12 @@ from daa.jev import questions as Q
 from daa.jev.client import FakeJev, JevUnavailable
 from daa.jev.gate import AddressGate, WakeDecision
 
-SETTINGS = Settings()  # address_gate 0.85, end_of_turn 0.75, needs_planner 0.60
+SETTINGS = Settings()  # address_gate 0.42 (calibrated, see evals/), end_of_turn 0.75
 
 
-def gate(**canned) -> tuple[AddressGate, FakeJev]:
+def gate(*, settings=None, **canned) -> tuple[AddressGate, FakeJev]:
     fake = FakeJev(canned)
-    return AddressGate(fake, SETTINGS), fake
+    return AddressGate(fake, settings or SETTINGS), fake
 
 
 def test_the_gate_makes_exactly_one_jev_call():
@@ -46,7 +46,7 @@ def test_the_state_carries_the_transcript_and_the_caller_context():
 @pytest.mark.parametrize(
     "p, expected",
     [
-        (0.84999, False),   # just under the gate
+        (0.84999, False),   # just under the gate (threshold pinned below)
         (0.85, True),       # exactly on it: the threshold means "at least this"
         (0.85001, True),
         (0.0, False),
@@ -54,7 +54,13 @@ def test_the_state_carries_the_transcript_and_the_caller_context():
     ],
 )
 def test_wake_thresholds_exactly_on_address_gate(p, expected):
-    g, _ = gate(addressed=p)
+    # Threshold pinned, NOT read from the default: evals/ are expected to keep
+    # moving that default, and this test is about the >= comparison, not the
+    # value. Riding the default made this test fail the first time the gate
+    # was actually calibrated, which is the wrong signal from the wrong test.
+    from dataclasses import replace
+
+    g, _ = gate(addressed=p, settings=replace(SETTINGS, address_gate=0.85))
     assert g.should_wake("do the thing", {}).wake is expected
 
 
@@ -118,10 +124,32 @@ def test_a_jev_outage_fails_closed():
     )
 
 
-def test_an_unseeded_provider_does_not_wake():
-    """The fake's neutral default (0.5) sits below every wake threshold."""
+def test_an_unseeded_provider_does_not_wake_a_hot_mic():
+    """A fake judge may not open an always-on mic.
+
+    This test used to read "0.5 sits below every wake threshold". That stopped
+    being true the moment address_gate was calibrated against evals/ and moved
+    to 0.42: FakeJev's unseeded 0.5 means "I don't know", and "I don't know" is
+    now above the bar. Without the guard in gate.py, a machine with no
+    TYPESAFE_API_KEY running always-on would wake on every sound in the room.
+    """
+    from dataclasses import replace
+
     g, _ = gate()
+    hot = replace(g._settings, always_on=True)
+    g._settings = hot
     assert g.should_wake("something", {}).wake is False
+
+
+def test_push_to_talk_is_unaffected_by_the_hot_mic_guard():
+    """Only always-on is gated on a real judgment.
+
+    In push-to-talk the user pressing a key IS the address signal, so there is
+    no judgment to distrust; refusing to wake there would break the keyless
+    dev loop for no safety gain.
+    """
+    g, _ = gate(addressed=0.99)
+    assert g.should_wake("open safari", {}).wake is True
 
 
 def test_the_wake_decision_is_frozen():

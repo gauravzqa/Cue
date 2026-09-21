@@ -27,14 +27,24 @@ class Settings:
     # Jev thresholds. Calibrated probabilities mean these are tunable against
     # real outcomes rather than guessed -- see evals/. Defaults are deliberately
     # cautious: we would rather ask twice than act once on a mishearing.
-    address_gate: float = 0.85        # P(addressed to me) to wake at all
+    # 0.42 sits in the band between the highest-scoring unaddressed utterance
+    # (0.39, "i was telling daa to open it") and the second-lowest addressed one
+    # (0.43). At this value evals/ scores 1 miss and 0 false wakes on 40 cases.
+    # It was 0.85, which was a guess and cost 13 of 16 misses. CAVEAT: the band
+    # is only 0.04 wide on 40 samples -- widen the dataset before trusting it.
+    address_gate: float = 0.42        # P(addressed to me) to wake at all
     end_of_turn: float = 0.75         # P(user finished speaking)
     confirm_yes: float = 0.90         # P(that was a yes) to treat as consent
     confirm_no: float = 0.35          # below this, treat as a no; between = re-ask
     needs_planner: float = 0.60
 
     # Model selection
-    voice_model: str = "deepseek-chat"
+    # deepseek-flash, not deepseek-chat: `models.list()` on a real key returns
+    # exactly {deepseek-flash, deepseek-v4-pro} and no deepseek-chat, so the
+    # old default 404s. Flash is also the right half of the pair here -- the
+    # voice loop wants latency, and the slow model belongs behind the
+    # needs_planner gate, not on the conversational path.
+    voice_model: str = "deepseek-flash"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
     @classmethod

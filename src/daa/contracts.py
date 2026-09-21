@@ -270,7 +270,16 @@ class RiskAssessment:
     unrecoverable: float         # 0..1 noul
     explicitly_requested: float  # 0..1 noul
     target_confidence: str       # "certain" | "probable" | "guessing"
-    confidence: float            # min confidence across the contributing answers
+    # Minimum confidence across the DANGER answers (blast_radius,
+    # unrecoverable) -- NOT across all four. Doubt about whether the user
+    # explicitly asked, or about which target we resolved, is not doubt about
+    # whether being wrong would hurt; folding it in here made a read-only
+    # Spotlight search demand a spoken confirmation. Those two have their own
+    # escalation rules, so counting their confidence here double-counted them.
+    confidence: float
+    # Per-answer confidence for every question, for the audit log and for
+    # "why are you asking?". Judgment lives in `confidence`; this is evidence.
+    answer_confidence: Mapping[str, float] = field(default_factory=dict)
     synthetic: bool = False
 
 

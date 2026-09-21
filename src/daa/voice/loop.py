@@ -73,10 +73,6 @@ _NO_SCREEN = (
     "That one has to be approved on screen and there's no screen here, "
     "so I'm leaving it."
 )
-_NEEDS_SCREEN = (
-    "That one has to be approved on screen. I've printed the details in the "
-    "terminal — type yes there if you want it."
-)
 # Said out loud when the undo journal hands us a row the registry will not
 # vouch for. Deliberately not detailed: the detail goes to the audit log, and
 # the user gets a clear refusal plus a way forward.
@@ -463,7 +459,11 @@ class VoiceLoop:
             return self.llm.respond(self.transcript.messages(system=_system_prompt()), specs)
         except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
             self._emit("error", where="llm", error=str(exc))
-            return LLMTurn(text="Sorry, I couldn't reach the model.")
+            # Say WHICH failure. "Couldn't reach the model" sent me chasing a
+            # network problem when the real answer was a 402 with an exact
+            # message in the body; an assistant that hides the one useful
+            # sentence in the exception is worse than one that says nothing.
+            return LLMTurn(text=f"The model call failed: {_llm_reason(exc)}")
 
     def _lookup(self, name: str, outcome: TurnOutcome) -> Any:
         """Find a tool by name, treating "there is no such tool" as ROUTINE.
@@ -691,7 +691,13 @@ class VoiceLoop:
             self._confirmation_logged(action, granted=False, via="visual")
             return False
 
-        self._speak(_NEEDS_SCREEN, outcome)
+        # Deliberately NOT spoken here. This line is only reached when the
+        # console IS available (the no-console case returned above with
+        # _NO_SCREEN), so the card is about to appear in front of the user and
+        # the header already says approval is needed on screen. Worse, `daa
+        # say` prints spoken lines after the turn completes, so this
+        # pre-announcement surfaced AFTER the typed approval and read as a
+        # refusal of the thing that had just been approved.
         typed = ""
         try:
             console.write(_visual_detail(action, disposition))
@@ -1228,3 +1234,26 @@ def build_loop(settings: Any, *, mic: AudioSource | None = None, audit: Any = No
     # which is the only place a half-wired tree should be visible.
     loop.missing = missing  # type: ignore[attr-defined]
     return loop
+
+
+def _llm_reason(exc: BaseException) -> str:
+    """One short spoken clause naming the actual cause.
+
+    Providers put the useful sentence in the response body, not in the
+    exception class, so prefer the body when we can reach it.
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        msg = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else None
+        if msg:
+            return str(msg).rstrip(".").lower()
+    status = getattr(exc, "status_code", None)
+    if status == 402:
+        return "the account is out of credit"
+    if status == 401:
+        return "the API key was rejected"
+    if status == 404:
+        return "that model name does not exist"
+    if status:
+        return f"the provider returned {status}"
+    return type(exc).__name__

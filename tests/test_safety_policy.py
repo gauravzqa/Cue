@@ -124,13 +124,49 @@ def test_confidence_threshold_boundary() -> None:
 
 
 # --- rule 2: guessing at the target -----------------------------------------
+#
+# Guessing escalates only where guessing WRONG costs something. Measured on
+# live Jev, `reveal_in_finder` came back "guessing" at 0.74 confidence, which
+# under the old unconditional rule pinned a read-only Finder reveal at
+# CONFIRM_VOICE forever. Revealing the wrong file costs one more sentence;
+# trashing the wrong file costs the file.
 
 
 def test_guessing_forces_confirm_voice_even_with_zero_blast_radius() -> None:
-    """Deleting ONE wrong file is a tiny blast radius and a total failure."""
+    """Deleting ONE wrong file is a tiny blast radius and a total failure, so
+    for a tool that MUTATES, blast radius must not talk us out of confirming."""
     a = assess(blast=0.0, unrecoverable=0.0, requested=1.0, target="guessing", confidence=1.0)
-    d = policy.decide(action(), spec(RiskTier.SILENT), a, LIVE)
+    d = policy.decide(action(), spec(RiskTier.ANNOUNCE), a, LIVE)
     assert d.tier >= RiskTier.CONFIRM_VOICE
+    assert "guessing" in d.reason
+
+
+def test_guessing_does_not_escalate_a_read_only_action() -> None:
+    """The measured regression. A tool whose author declared it read-only --
+    by tag and by a SILENT floor -- cannot be damaged by resolving to the wrong
+    target, so an unsure resolution is not a reason to interrupt anyone."""
+    a = assess(blast=0.02, unrecoverable=0.02, requested=0.69, target="guessing", confidence=0.96)
+    d = policy.decide(action(), spec(RiskTier.SILENT, tags=("files", "read")), a, LIVE)
+    assert d.tier is RiskTier.SILENT
+
+
+def test_a_guessed_target_still_confirms_when_the_model_says_it_is_big() -> None:
+    """Blast radius is a second way IN to the guessing rule, never a way out.
+    A tool claiming to be read-only while Jev insists this particular call is
+    substantial is a disagreement to resolve with the user, not silently."""
+    a = assess(blast=0.6, unrecoverable=0.0, requested=1.0, target="guessing", confidence=1.0)
+    d = policy.decide(action(), spec(RiskTier.SILENT, tags=("read",)), a, LIVE)
+    assert d.tier >= RiskTier.CONFIRM_VOICE
+
+
+def test_the_guessing_gate_reads_the_registry_not_the_model() -> None:
+    """Same numbers, two tools. The only difference is what a human wrote down
+    in the registry about what the tool can reach."""
+    a = assess(blast=0.1, unrecoverable=0.0, requested=1.0, target="guessing", confidence=1.0)
+    read_only = policy.decide(action(), spec(RiskTier.SILENT, tags=("read",)), a, LIVE)
+    mutating = policy.decide(action(), spec(RiskTier.SILENT, tags=("mutates",)), a, LIVE)
+    assert read_only.tier is RiskTier.SILENT
+    assert mutating.tier is RiskTier.CONFIRM_VOICE
 
 
 @pytest.mark.parametrize("target", ["certain", "probable"])
@@ -141,8 +177,9 @@ def test_known_good_target_confidence_does_not_escalate(target: str) -> None:
 
 @pytest.mark.parametrize("target", ["", "unsure", "GUESSING", "certain-ish", "probably"])
 def test_unrecognised_target_confidence_fails_closed(target: str) -> None:
-    """A model update that renames the labels must not open the gate."""
-    d = policy.decide(action(), spec(RiskTier.SILENT), assess(target=target), LIVE)
+    """A model update that renames the labels must not open the gate: anything
+    unrecognised is read as "guessing", and on a mutating tool that confirms."""
+    d = policy.decide(action(), spec(RiskTier.ANNOUNCE), assess(target=target), LIVE)
     assert d.tier >= RiskTier.CONFIRM_VOICE
 
 
@@ -313,7 +350,10 @@ def test_the_reason_names_the_escalation_that_actually_won() -> None:
         (assess(requested=0.0), "didn't ask"),
     ]
     for a, needle in cases:
-        d = policy.decide(action(), spec(RiskTier.SILENT), a, LIVE)
+        # ANNOUNCE rather than SILENT: "guessing" only escalates where guessing
+        # wrong can cost something, so a read-only spec would never reach the
+        # branch whose wording this test is pinning.
+        d = policy.decide(action(), spec(RiskTier.ANNOUNCE), a, LIVE)
         assert needle in d.reason, (needle, d.reason)
     assert "couldn't check" in policy.decide(action(), spec(), None, LIVE).reason
 
@@ -395,7 +435,12 @@ def test_safety_package_does_not_import_the_other_subsystems() -> None:
         (RiskTier.SILENT,       0.6,  0.0,  1.0, "certain",  1.0, True,  RiskTier.ANNOUNCE),
         (RiskTier.SILENT,       1.6,  0.0,  1.0, "certain",  1.0, True,  RiskTier.CONFIRM_VOICE),
         (RiskTier.SILENT,       2.6,  0.0,  1.0, "certain",  1.0, True,  RiskTier.CONFIRM_VISUAL),
-        (RiskTier.SILENT,       0.0,  0.0,  1.0, "guessing", 1.0, True,  RiskTier.CONFIRM_VOICE),
+        # guessing on a read-only tool (SILENT floor, no tags) is free now
+        (RiskTier.SILENT,       0.0,  0.0,  1.0, "guessing", 1.0, True,  RiskTier.SILENT),
+        # ... and still confirms the moment the tool can actually change things
+        (RiskTier.ANNOUNCE,     0.0,  0.0,  1.0, "guessing", 1.0, True,  RiskTier.CONFIRM_VOICE),
+        # ... or the moment the model says this particular call is not small
+        (RiskTier.SILENT,       0.6,  0.0,  1.0, "guessing", 1.0, True,  RiskTier.CONFIRM_VOICE),
         (RiskTier.SILENT,       0.0,  0.0,  1.0, "certain",  0.3, True,  RiskTier.CONFIRM_VOICE),
         (RiskTier.SILENT,       0.0,  0.9,  1.0, "certain",  1.0, True,  RiskTier.CONFIRM_VISUAL),
         (RiskTier.SILENT,       0.0,  0.0,  0.1, "certain",  1.0, True,  RiskTier.ANNOUNCE),
@@ -461,3 +506,183 @@ def test_an_inferred_action_never_escalates_past_the_policy_cap() -> None:
     worst = assess(blast=3.0, unrecoverable=1.0, requested=0.0, target="guessing", confidence=0.0)
     d = policy.decide(action(explicit=False), spec(RiskTier.CONFIRM_VISUAL), worst, LIVE)
     assert d.tier is RiskTier.CONFIRM_VISUAL
+
+
+# --- the five tools, with the numbers live Jev actually returned ------------
+#
+# Every assessment below is hardcoded from a measured run against the real
+# TYPESAFE_API_KEY. Nothing here calls the API: the point is to pin the
+# intended product behaviour so it survives without a key, and so a future
+# tweak to a threshold has to argue with a real measurement rather than with
+# a number somebody invented to make a test pass.
+#
+# `spec_of` mirrors what the registry declares. test_the_table_matches_the_real
+# _registry below fails if tools/ ever drifts from these assumptions, which is
+# what stops this table quietly testing a world that no longer exists.
+
+_REGISTRY_SHAPE = {
+    # name                 floor                   tags
+    "get_clipboard":      (RiskTier.SILENT,        ("clipboard", "read")),
+    "spotlight_search":   (RiskTier.SILENT,        ("files", "search", "read")),
+    "reveal_in_finder":   (RiskTier.SILENT,        ("files", "finder", "read")),
+    "move_to_trash":      (RiskTier.CONFIRM_VOICE, ("files", "destructive", "undoable")),
+    "run_shortcut":       (RiskTier.CONFIRM_VOICE, ("shortcuts", "automation", "irreversible")),
+    "run_applescript":    (RiskTier.CONFIRM_VISUAL, ("applescript", "escape-hatch",
+                                                     "irreversible")),
+}
+
+
+def spec_of(name: str) -> ToolSpec:
+    floor, tags = _REGISTRY_SHAPE[name]
+    return ToolSpec(name=name, description="", params={}, floor=floor, tags=tags)
+
+
+@pytest.mark.parametrize(
+    ("name", "a", "allowed"),
+    [
+        # "what's on my clipboard" -- read-only, certain, asked for outright.
+        (
+            "get_clipboard",
+            assess(blast=0.01, unrecoverable=0.01, requested=0.94, target="certain",
+                   confidence=0.97),
+            {RiskTier.SILENT},
+        ),
+        # "find my invoice". THE measured regression: both danger answers are
+        # ~0.02 at ~0.97 confidence, and all the doubt is in "did they ask for
+        # this" (0.38) and "is this the right target" (0.42). Under a flat min
+        # over four answers this asked permission before running a search.
+        (
+            "spotlight_search",
+            assess(blast=0.02, unrecoverable=0.02, requested=0.69, target="probable",
+                   confidence=0.96),
+            {RiskTier.SILENT},
+        ),
+        # Same shape, but Jev returned "guessing" on the target at 0.74. Under
+        # the old unconditional guessing rule this was CONFIRM_VOICE forever.
+        (
+            "reveal_in_finder",
+            assess(blast=0.05, unrecoverable=0.02, requested=0.61, target="guessing",
+                   confidence=0.95),
+            {RiskTier.SILENT, RiskTier.ANNOUNCE},
+        ),
+        # The one that must NOT get quieter. Its floor says so, and the floor
+        # is the whole point: a reassuring assessment cannot lower it.
+        (
+            "move_to_trash",
+            assess(blast=0.9, unrecoverable=0.2, requested=0.97, target="certain",
+                   confidence=0.93),
+            {RiskTier.CONFIRM_VOICE},
+        ),
+        # A shortcut carrying a body of text does something we cannot inspect.
+        (
+            "run_shortcut",
+            assess(blast=1.1, unrecoverable=0.45, requested=0.88, target="certain",
+                   confidence=0.71),
+            {RiskTier.CONFIRM_VOICE, RiskTier.CONFIRM_VISUAL},
+        ),
+        # The escape hatch. Voice alone never authorizes it.
+        (
+            "run_applescript",
+            assess(blast=1.4, unrecoverable=0.6, requested=0.9, target="certain",
+                   confidence=0.66),
+            {RiskTier.CONFIRM_VISUAL},
+        ),
+    ],
+    ids=list(_REGISTRY_SHAPE),
+)
+def test_live_shaped_assessments_land_on_the_intended_tier(name, a, allowed) -> None:
+    d = policy.decide(action(), spec_of(name), a, LIVE)
+    names = [t.name for t in allowed]
+    assert d.tier in allowed, f"{name}: {d.tier.name} not in {names} -- {d.reason}"
+
+
+def test_a_read_only_search_is_silent_and_a_trash_is_not() -> None:
+    """The one-line summary of both fixes: the quiet ones got quiet, and
+    nothing that can destroy something moved a millimetre."""
+    searching = assess(blast=0.02, unrecoverable=0.02, requested=0.69, target="probable",
+                       confidence=0.96)
+    assert policy.decide(action(), spec_of("spotlight_search"), searching, LIVE).tier is (
+        RiskTier.SILENT
+    )
+    assert policy.decide(action(), spec_of("move_to_trash"), SAFEST, LIVE).tier is (
+        RiskTier.CONFIRM_VOICE
+    )
+    assert policy.decide(action(), spec_of("run_applescript"), SAFEST, LIVE).tier is (
+        RiskTier.CONFIRM_VISUAL
+    )
+
+
+def test_the_table_matches_the_real_registry() -> None:
+    """The table above is only meaningful if tools/ still agrees with it.
+
+    safety/ may not import tools/, so this is a TEST-only cross-check: it skips
+    where the registry cannot be built, and fails loudly where a floor or a tag
+    has moved underneath the numbers.
+    """
+    registry = pytest.importorskip("daa.tools.registry")
+    real = {s.name: s for s in registry.REGISTRY.specs()}
+    for name, (floor, tags) in _REGISTRY_SHAPE.items():
+        assert name in real, f"{name} has left the registry"
+        assert real[name].floor is floor, f"{name} floor moved to {real[name].floor.name}"
+        assert tuple(real[name].tags) == tags, f"{name} tags moved to {real[name].tags}"
+
+
+# --- the sweep, extended -----------------------------------------------------
+
+
+def test_the_whole_assessment_space_over_both_kinds_of_tool() -> None:
+    """The full cross-product, run over a read-only spec AND a mutating one,
+    because rule 2 now reads the spec and a sweep that only ever saw one kind
+    of tool would only ever test half the rule.
+
+    Asserts the two invariants that may never bend: the floor is never lowered,
+    and policy never invents a REFUSE.
+    """
+    checked = 0
+    violations: list[str] = []
+    for floor in ALL_TIERS:
+        for tags in ((), ("read",), ("mutates",)):
+            s = spec(floor, tags=tags)
+            for blast in (0.0, 0.4, 0.5, 1.0, 1.6, 2.4, 3.0, -5.0, 99.0, float("nan")):
+                for unrec in (0.0, 0.5, 0.51, 1.0, -1.0):
+                    for req in (0.0, 0.49, 0.5, 1.0):
+                        for target in ("certain", "probable", "guessing", "", "nonsense"):
+                            for conf in (0.0, 0.49, 0.5, 1.0):
+                                for explicit in (True, False):
+                                    a = assess(blast, unrec, req, target, conf)
+                                    d = policy.decide(action(explicit=explicit), s, a, LIVE)
+                                    checked += 1
+                                    if d.tier < floor:
+                                        violations.append(f"floor {floor.name} -> {d.tier.name}")
+                                    if d.tier is RiskTier.REFUSE and floor is not RiskTier.REFUSE:
+                                        violations.append(f"invented REFUSE from {floor.name}")
+    assert checked >= 52_800, f"only swept {checked} combinations"
+    assert violations == [], violations[:5]
+
+
+def test_is_mutating_believes_the_tag_over_the_floor_heuristic() -> None:
+    """`is_mutating` used to be a tiebreaker for the Jev-is-down path only, and
+    it guessed from the floor. Rule 2 now leans on it, so an author's explicit
+    tag has to beat the guess in BOTH directions -- otherwise the floor is the
+    only thing that ever speaks and the tags are decoration.
+
+    "read" is the spelling the registry actually uses; it was not in the list.
+    """
+    read_tagged = spec(RiskTier.ANNOUNCE, tags=("files", "read"))
+    assert policy.is_mutating(read_tagged) is False
+
+    mutating_tagged = spec(RiskTier.SILENT, tags=("mutates",))
+    assert policy.is_mutating(mutating_tagged) is True
+
+    # No tags at all: fall back to the floor, exactly as before.
+    assert policy.is_mutating(spec(RiskTier.SILENT)) is False
+    assert policy.is_mutating(spec(RiskTier.ANNOUNCE)) is True
+
+
+def test_a_read_tagged_tool_above_the_silent_floor_is_not_confirmed_for_guessing() -> None:
+    """The case where the tag is the only signal: a read-only tool that is
+    noisy enough to deserve an ANNOUNCE floor still must not demand a
+    confirmation just because the target resolution was unsure."""
+    a = assess(blast=0.1, unrecoverable=0.0, requested=1.0, target="guessing", confidence=1.0)
+    d = policy.decide(action(), spec(RiskTier.ANNOUNCE, tags=("files", "read")), a, LIVE)
+    assert d.tier is RiskTier.ANNOUNCE

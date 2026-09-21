@@ -147,17 +147,36 @@ def derive_tier(
     # can't be undone" is a better answer to "why?" than "this is a big one".
     candidates: list[tuple[int, int, str]] = [_from_blast(blast)]
 
-    # 1. Low confidence escalates. An uncertain judgment is worse than a
-    #    confident wrong one: a wrong answer can be corrected by the next
-    #    question, but an answer nobody can reason about cannot be corrected
-    #    at all. So we hand it back to the human.
+    # 1. Low confidence IN THE DANGER SIGNALS escalates. An uncertain judgment
+    #    is worse than a confident wrong one: a wrong answer can be corrected
+    #    by the next question, but an answer nobody can reason about cannot be
+    #    corrected at all. So we hand it back to the human.
+    #
+    #    `assessment.confidence` is the minimum over blast_radius and
+    #    unrecoverable ONLY -- the two answers that decide whether being wrong
+    #    costs anything (jev/risk.py). It used to be the minimum over all four,
+    #    which meant a 0.42 on "is this the right file?" asked the user to
+    #    authorise a Spotlight search. The other two answers still escalate,
+    #    through rules 2 and 4 below, where their uncertainty is charged once
+    #    instead of twice.
     if confidence < LOW_CONFIDENCE:
         candidates.append((int(RiskTier.CONFIRM_VOICE), 2, _R_LOW_CONFIDENCE))
 
-    # 2. "guessing" is about RESOLUTION, not size. Deleting one wrong file is
-    #    a small blast radius and a total failure, so blast radius must not be
-    #    able to talk us out of confirming it.
-    if target == "guessing":
+    # 2. "guessing" is about RESOLUTION, not size -- but resolving to the wrong
+    #    thing only matters if acting on the wrong thing does damage. Deleting
+    #    one wrong file is a small blast radius and a total failure, so blast
+    #    radius alone must not be able to talk us out of confirming it;
+    #    searching for the wrong thing costs a second search, so it must not
+    #    force a confirmation either.
+    #
+    #    The gate is the tool's OWN declaration first (`is_mutating`, which
+    #    reads the human-authored floor and tags in the registry), because the
+    #    signal we are distrusting here is Jev's target resolution and it would
+    #    be circular to let Jev's own blast estimate be the only thing that
+    #    excuses it. Blast radius is kept as a second way IN, never a way out:
+    #    if the model insists this is a big one, a guessed target confirms even
+    #    when the tool claims to be read-only.
+    if target == "guessing" and (is_mutating(spec) or blast >= BLAST_ANNOUNCE):
         candidates.append((int(RiskTier.CONFIRM_VOICE), 3, _R_GUESSING))
 
     # 3. Voice alone can never authorize destroying something the user cannot
@@ -215,7 +234,13 @@ def is_mutating(spec: ToolSpec) -> bool:
     tags = tuple(spec.tags)
     if "mutates" in tags:
         return True
-    if "read_only" in tags or "readonly" in tags:
+    # "read" is the tag the registry actually uses (get_clipboard, list_windows,
+    # spotlight_search, reveal_in_finder); the other two spellings were here
+    # first and cost nothing to keep. Without it the only thing asserting
+    # read-only-ness was the floor, which makes a tool author's explicit tag
+    # decorative -- and this function is now load-bearing for rule 2, not just
+    # for the no-assessment path.
+    if tags and ({"read", "read_only", "readonly"} & set(tags)):
         return False
     return spec.floor > RiskTier.SILENT
 

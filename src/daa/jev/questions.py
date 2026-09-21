@@ -65,12 +65,26 @@ def gate_questions() -> dict[str, Question]:
     return {
         Q_ADDRESSED: Noul(
             instructions=(
-                "The state is one utterance heard in a room where the assistant is always "
-                "listening. Most of what it hears is not meant for it: people talk to each "
-                "other, read aloud, mutter, and talk to their pets. Judge whether THIS "
-                "utterance is directed at the assistant."
+                "The assistant is a computer assistant named daa, running on this Mac. "
+                "The state is one utterance heard in a room where daa is always listening. "
+                "Most of what it hears is not meant for it: people talk to each other, "
+                "read aloud, mutter, and talk to their pets. Judge whether THIS utterance "
+                "is directed at daa.\n"
+                "Two cases decide most of the hard ones:\n"
+                "- An utterance aimed at a DIFFERENT assistant (Siri, Alexa, Google, "
+                "ChatGPT) is NOT directed at daa, even though it is addressed to an "
+                "assistant and sounds exactly like a command.\n"
+                "- `context` says what daa was just doing. If daa has just asked a "
+                "question or is waiting for a confirmation, then a short reply, a "
+                "correction, or an interruption -- 'yeah do it', 'no wait', 'never mind', "
+                "'stop' -- IS directed at daa. With no such context, the same words are "
+                "probably aimed at a person."
             ),
-            criteria="the speaker is addressing the assistant, not another person or themselves",
+            # Names the assistant, because the earlier wording ("the assistant")
+            # scored "hey siri what's the weather" at 0.98 -- higher than every
+            # genuine command in the eval set. Jev was answering correctly; the
+            # question simply did not say WHICH assistant. See evals/.
+            criteria="the speaker is talking to daa, not to a person and not to another assistant",
         ),
         Q_END_OF_TURN: Noul(
             instructions=(
@@ -154,12 +168,26 @@ def risk_questions() -> dict[str, Question]:
         ),
         Q_UNRECOVERABLE: Noul(
             instructions=(
-                "If this action turns out to be wrong, judge whether the user could get "
-                "back to where they were -- by undo, by the trash, by version history, or "
-                "by asking someone. Sending a message to another person counts as "
-                "unrecoverable even though nothing was destroyed."
+                "Judge whether the effects of this action would be IMPOSSIBLE, or very "
+                "hard, to reverse afterwards.\n"
+                "- An action that changes nothing -- reading, listing, searching, "
+                "revealing a file, showing a window -- is trivially reversible. No.\n"
+                "- This assistant moves files to the Trash rather than deleting them, and "
+                "records an inverse for every change it makes, so a move or a trash is "
+                "normally recoverable. No, unless something is overwritten with no copy "
+                "kept.\n"
+                "- Answer yes only for effects no undo can reach: a message or email sent "
+                "to another person, a payment, a public post, a permanent deletion.\n"
+                "Judge the ACTION's effect, not whether the DATA would be precious."
             ),
-            criteria="the effects of this action could not be reversed afterwards",
+            # Polarity: instructions and criteria must point the SAME way. The
+            # previous wording asked "could the user get back to where they
+            # were" while the criteria asserted "could not be reversed", so a
+            # confident "yes, easily recovered" arrived as a high
+            # `unrecoverable`. Live Jev scored get_clipboard -- a pure read --
+            # at 0.60, and since >0.5 forces CONFIRM_VISUAL that escalated
+            # every tool in the product to a screen prompt.
+            criteria="the effects of this action could not be undone afterwards",
         ),
         Q_EXPLICITLY_REQUESTED: Noul(
             instructions=(

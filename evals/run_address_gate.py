@@ -50,7 +50,7 @@ def main() -> int:
     misses, false_wakes, synthetic = [], [], False
 
     for c in cases:
-        d = gate.should_wake(c["utterance"], {})
+        d = gate.should_wake(c["utterance"], c.get("ctx", {}))
         synthetic = synthetic or d.synthetic
         lat.append(d.latency_ms)
         correct = d.wake == c["addressed"]
