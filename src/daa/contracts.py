@@ -127,6 +127,16 @@ class ResolvedAction:
     # convince a judgment model, which is precisely what floors exist to
     # defend against. Policy takes max(spec.floor, floor_hint, derived): it can
     # only ever RAISE, so a resolver cannot use it to make anything cheaper.
+    #
+    # NOT a substitute for splitting a tool. A hint is set by code that has to
+    # RUN and be RIGHT; a resolver that fails to recognise a payment form
+    # degrades silently to the tool's ordinary floor, and a silent downgrade is
+    # the worst failure this codebase has. `ToolSpec.floor` cannot degrade at
+    # all. So when a capability has a genuinely dangerous mode, give that mode
+    # its own tool with its own static floor (`click_element` vs `submit_form`)
+    # and use the hint for the residue. `irreversible` is a per-tool property
+    # that test_undo_coverage reads off the spec, so one tool covering both
+    # modes would have to lie about one of them.
     floor_hint: RiskTier | None = None
     verb: str = ""
     # Consequences the user MUST hear, because they change what consent means:
