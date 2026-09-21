@@ -74,6 +74,16 @@ class ToolSpec:
     # the tool that produced it is refused. Empty means "this tool has no
     # inverse", which is a stronger statement than "undo is missing".
     inverses: tuple[str, ...] = ()
+    # May a scoped grant ever answer this tool's confirmation on the user's
+    # behalf? Static and human-authored, exactly like `floor`. Some things are
+    # never answered in advance no matter how narrow the scope: sending a
+    # message to a person, spending money, changing auth state, deleting past
+    # the Trash. Defaulting True keeps every existing tool unchanged; the
+    # dangerous ones are opted OUT by hand, in review.
+    grantable: bool = True
+    # Cheap discovery for the router and the loop, so neither has to reach for
+    # isinstance(tool, LongRunningTool) on a hot path.
+    long_running: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +107,13 @@ class ToolResult:
     data: Mapping[str, Any] = field(default_factory=dict)
     undo: UndoAction | None = None
     error: str | None = None
+    # Set when this result starts (or belongs to) background work, so the loop
+    # can say "I've started on that" and know what to watch.
+    job_id: str | None = None
+    # The checkpoint this step belongs to. Declared by the step rather than
+    # inferred by the loop, because only the tool knows where a logical unit
+    # of work begins and ends.
+    checkpoint_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +155,13 @@ class ResolvedAction:
     # that test_undo_coverage reads off the spec, so one tool covering both
     # modes would have to lie about one of them.
     floor_hint: RiskTier | None = None
+    # Scheme+host ("https://stripe.com") or a bundle id ("com.apple.Safari").
+    # Supplied by the resolver. Grant scope matching needs it, and the
+    # alternative -- re-parsing args inside safety/ to find a URL -- would put
+    # URL parsing in the one module that must stay pure. NEVER included in
+    # describe(): the readback names what the user would recognise, and an
+    # origin is a machine key, not a spoken phrase.
+    origin: str | None = None
     verb: str = ""
     # Consequences the user MUST hear, because they change what consent means:
     # {"overwrite": "replacing 1 file that is already there"}. Everything here
@@ -322,3 +346,219 @@ class AuditEvent:
 
 
 AuditSink = Callable[[AuditEvent], None]
+
+
+# ---------------------------------------------------------------------------
+# Scoped grants, warrants, jobs
+#
+# The consent model splits in two. Until now the unit of CONSENT and the unit
+# of EXECUTION were the same object (a ResolvedAction), which works only while
+# every action is fast, atomic and nameable. A forty-step browser flow is none
+# of those, and "click at (847, 312)" cannot be read back honestly at all.
+#
+# So: execution is unchanged. Every step still goes resolve -> assess ->
+# policy.decide -> _execute -> UndoJournal.record, and _execute remains the one
+# place a tool may be invoked. Only consent changes shape: the user approves a
+# GOAL with a budget and a ceiling, and a Grant can then supply the ANSWER to a
+# confirmation that policy already demanded.
+#
+# A grant is never an input to the tier calculation. `tier = max(spec.floor,
+# floor_hint, derived)` is untouched and knows nothing about grants. That is
+# the whole defence against a grant quietly becoming blanket permission.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GrantScope:
+    """What a grant covers. EMPTY MEANS EMPTY, never "everything".
+
+    The permissive-default bug is the one this type exists to prevent: a scope
+    nobody filled in must authorize nothing, so that forgetting to set it fails
+    closed and loudly rather than silently widening.
+    """
+
+    tools: frozenset[str] = field(default_factory=frozenset)
+    origins: frozenset[str] = field(default_factory=frozenset)
+    apps: frozenset[str] = field(default_factory=frozenset)
+    path_prefixes: tuple[str, ...] = ()
+
+    def covers_tool(self, name: str) -> bool:
+        return name in self.tools
+
+    def covers_origin(self, origin: str | None) -> bool:
+        # An action with no origin is not "origin-free", it is unlabelled --
+        # and an unlabelled action cannot be shown to fall inside a scope.
+        return origin is not None and origin in self.origins
+
+
+@dataclass(frozen=True, slots=True)
+class Budget:
+    """Bounds that make a grant finite. Exhaustion is a re-confirmation, not a
+    failure: the user said yes to THIS much."""
+
+    steps: int = 0
+    seconds: float = 0.0
+    # 0 means MAY NOT SPEND. There is no sentinel for "unlimited"; a grant that
+    # can spend arbitrary money is not a grant, it is a bank account.
+    spend_cents: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class Grant:
+    """Consent to a bounded goal, given once, spendable across many steps."""
+
+    id: str
+    goal: str
+    # The EXACT sentence the user heard, stored verbatim. A scope object
+    # answers "what was permitted"; only this answers "what did they consent
+    # to", which is the question asked six months later.
+    plan_summary: str
+    ceiling: RiskTier
+    # How consent arrived. A grant given by voice can never answer a question
+    # that exists precisely because voice is not good enough -- see channel_cap.
+    granted_via: str = "voice"
+    scope: GrantScope = field(default_factory=GrantScope)
+    budget: Budget = field(default_factory=Budget)
+    granted_at: float = 0.0
+    expires_at: float = 0.0
+    # Re-confirmation creates a CHILD grant rather than editing this one, so
+    # the audit trail shows what was widened, when, and on what sentence.
+    parent_id: str | None = None
+    # Consequences the user was actually told about. A consequence discovered
+    # mid-run that is not in here is new information and forces a re-confirm.
+    briefed_consequences: tuple[str, ...] = ()
+
+    @property
+    def channel_cap(self) -> RiskTier:
+        """The highest tier this grant could ever answer for, by channel alone.
+
+        CONFIRM_VISUAL exists because a spoken yes is not good enough. A spoken
+        grant that could pre-authorize it would defeat the tier by going around
+        it, so the cap is structural rather than a policy anyone can tune.
+        """
+        return RiskTier.CONFIRM_VOICE if self.granted_via == "voice" else RiskTier.CONFIRM_VISUAL
+
+    @property
+    def max_satisfiable(self) -> RiskTier:
+        return min(self.ceiling, self.channel_cap)
+
+
+@dataclass(frozen=True, slots=True)
+class Warrant:
+    """Single-use authorization for ONE action, bound to that exact action.
+
+    This is what crosses the thread boundary in place of `confirmed: bool`. A
+    bare boolean is forgeable by any code that can construct one; a warrant
+    carries the digest of the action it was issued for, so it cannot be reused
+    for a different action or replayed after it expires.
+    """
+
+    id: str
+    action_digest: str          # sha256 over the resolved action
+    tier: RiskTier              # the tier this warrant actually answers
+    issued_at: float
+    expires_at: float
+    grant_id: str | None = None      # None => answered by a live confirmation
+    # "voice" | "visual" | "grant" -- carried into the audit row so the log can
+    # distinguish "the user said yes" from "a grant said yes on their behalf".
+    via: str = "voice"
+
+
+@dataclass(frozen=True, slots=True)
+class Checkpoint:
+    """A window of undo-journal entries treated as one unit of work.
+
+    Deliberately NOT a snapshot. It records which entries belong together so a
+    rollback can replay them in reverse through the existing validation. It
+    does not make irreversible things reversible -- it makes the boundary
+    speakable: "I put back four of the six; the other two had already moved."
+    """
+
+    id: str
+    job_id: str | None = None
+    entry_ids: tuple[str, ...] = ()
+    created_at: float = 0.0
+    # Sealed means "past here, rollback stops being a clean unwind". It does
+    # not disable rollback; it changes the sentence the user hears.
+    sealed: bool = False
+
+
+class JobStatus(enum.StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_CONSENT = "waiting_consent"
+    PAUSED = "paused"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    # Fail-closed states. A job never silently resumes across a restart, and a
+    # job that could not get consent in time does not get it later by default.
+    INTERRUPTED = "interrupted"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True, slots=True)
+class JobProgress:
+    # Written to be SPOKEN: "checking the third flight". Not a log line.
+    phase: str
+    step: int = 0
+    steps_total: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class JobRecord:
+    id: str
+    goal: str
+    status: JobStatus
+    grant_id: str | None = None
+    started_at: float = 0.0
+    updated_at: float = 0.0
+    progress: JobProgress | None = None
+    checkpoint_ids: tuple[str, ...] = ()
+    # One spoken sentence for when this is reported back, minutes later.
+    summary: str = ""
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Notice:
+    """Something a background job wants said, queued until it is safe to say.
+
+    There is deliberately NO "high" urgency. No background job is important
+    enough to talk over a human, and providing the option guarantees something
+    eventually uses it.
+    """
+
+    job_id: str
+    text: str
+    urgency: Literal["low", "normal"] = "normal"
+    created_at: float = 0.0
+
+
+# A long-running tool yields the action it WANTS to take and receives the
+# result of that action back. It is a generator, so the agent structurally
+# cannot invoke a tool -- it can only ask for one and be told what happened.
+# That is the invariant enforced by type rather than by discipline.
+StepStream = Any  # Generator[ResolvedAction, ToolResult, ToolResult]
+
+
+@runtime_checkable
+class LongRunningTool(Protocol):
+    """Separate from `Tool`, and that separation is load-bearing.
+
+    Adding a method to `Tool` would make `isinstance` return False for all 13
+    existing tools, and ToolRegistry.register raises on that -- roughly 150
+    tests die at import for one line. A long-running tool satisfies `Tool` too,
+    so it still registers, routes and gates exactly like everything else.
+    """
+
+    spec: ToolSpec
+
+    def resolve(self, **kwargs: Any) -> ResolvedAction:
+        ...
+
+    def run(self, action: ResolvedAction) -> ToolResult:
+        ...
+
+    def steps(self, action: ResolvedAction) -> StepStream:
+        ...
