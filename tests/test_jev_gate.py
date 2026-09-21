@@ -27,12 +27,50 @@ def test_the_gate_makes_exactly_one_jev_call():
     assert len(fake.calls) == 1
 
 
-def test_the_single_call_batches_all_three_questions():
+def test_the_single_call_batches_every_question():
+    """One call, whatever the question count.
+
+    Pinning the exact set is the point: adding a question to the hot path has
+    to be a deliberate edit here, not something that accrues. `stop` joined
+    this call rather than getting its own, because a revocation that costs a
+    second round trip arrives after the thing it was meant to prevent.
+    """
     g, fake = gate()
     g.should_wake("hey", {})
     _, questions, _ = fake.calls[0]
-    assert set(questions) == {Q.Q_ADDRESSED, Q.Q_END_OF_TURN, Q.Q_NEEDS_PLANNER}
+    assert set(questions) == {Q.Q_ADDRESSED, Q.Q_END_OF_TURN, Q.Q_NEEDS_PLANNER, Q.Q_STOP}
     assert all(isinstance(q, Noul) for q in questions.values())
+    assert len(fake.calls) == 1
+
+
+def test_stop_is_heard_even_when_the_gate_does_not_wake():
+    """The one case where failing the address gate must not silence you.
+
+    The gate exists to stop daa ACTING on speech that was not for it. Halting
+    is not acting, and someone shouting "stop" at a machine mid-action is
+    exactly who should not have to satisfy an address classifier first.
+    """
+    g, _ = gate(addressed=0.02, stop=0.97)
+    d = g.should_wake("stop stop stop", {})
+    assert d.wake is False
+    assert d.stop is True
+
+
+def test_a_jev_outage_does_not_invent_a_stop():
+    g = AddressGate(FakeJev(fail=JevUnavailable("down")), SETTINGS)
+    d = g.should_wake("stop", {})
+    assert d.stop is False and d.stop_p == 0.0
+
+
+@pytest.mark.parametrize("p, expected", [(0.49, False), (0.5, True), (0.9, True)])
+def test_the_stop_threshold_is_laxer_than_the_others(p, expected):
+    g, _ = gate(addressed=0.99, stop=p)
+    assert g.should_wake("wait", {}).stop is expected
+    # Sits AT maximum uncertainty: we halt on a coin flip. Every other
+    # threshold in the product demands better-than-even evidence before doing
+    # something; this one demands better-than-even evidence before continuing.
+    assert SETTINGS.stop_p == 0.5
+    assert SETTINGS.stop_p < SETTINGS.confirm_yes
 
 
 def test_the_state_carries_the_transcript_and_the_caller_context():

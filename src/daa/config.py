@@ -53,6 +53,12 @@ class Settings:
     confirm_yes: float = 0.90         # P(that was a yes) to treat as consent
     confirm_no: float = 0.35          # below this, treat as a no; between = re-ask
     needs_planner: float = 0.60
+    # Sits exactly at maximum uncertainty, and that is the whole idea: daa
+    # halts on a coin flip. Every other threshold here demands better-than-even
+    # evidence before DOING something; this one demands better-than-even
+    # evidence before CONTINUING. A false stop costs a repeat, a missed stop
+    # means the thing the user is trying to halt carries on regardless.
+    stop_p: float = 0.50
 
     # Model selection
     # deepseek-flash, not deepseek-chat: `models.list()` on a real key returns

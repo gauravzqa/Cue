@@ -28,6 +28,16 @@ class WakeDecision:
     addressed_p: float
     latency_ms: float
     synthetic: bool = False
+    # "Stop what you are doing." Rides the SAME single call as everything else
+    # -- a revocation that costs a second round trip is a revocation that
+    # arrives after the thing it was meant to prevent.
+    #
+    # Deliberately NOT gated on `wake`. Someone shouting "stop" at a machine
+    # that is mid-action is the one case where demanding they first satisfy the
+    # address gate is indefensible: the gate exists to stop daa acting on
+    # speech that was not for it, and halting is not acting.
+    stop: bool = False
+    stop_p: float = 0.0
 
 
 class AddressGate:
@@ -47,6 +57,8 @@ class AddressGate:
                 addressed_p=0.0,
                 latency_ms=0.0,
                 synthetic=True,
+                stop=False,
+                stop_p=0.0,
             )
 
         try:
@@ -69,11 +81,14 @@ class AddressGate:
                 addressed_p=0.0,
                 latency_ms=0.0,
                 synthetic=True,
+                stop=False,
+                stop_p=0.0,
             )
 
         addressed_p = answers.noul(Q.Q_ADDRESSED)
         end_p = answers.noul(Q.Q_END_OF_TURN)
         planner_p = answers.noul(Q.Q_NEEDS_PLANNER)
+        stop_p = answers.noul(Q.Q_STOP)
 
         # `wake` and `end_of_turn` are thresholded INDEPENDENTLY and reported
         # separately. They answer different questions -- "is this for me" versus
@@ -95,6 +110,8 @@ class AddressGate:
             wake=wake,
             end_of_turn=end_p >= self._settings.end_of_turn,
             needs_planner=planner_p >= self._settings.needs_planner,
+            stop=stop_p >= getattr(self._settings, "stop_p", 0.5),
+            stop_p=stop_p,
             addressed_p=addressed_p,
             latency_ms=answers.latency_ms,
             synthetic=answers.synthetic,

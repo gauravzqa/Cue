@@ -22,6 +22,7 @@ from daa.contracts import Choice, Noul, Question, Score, ToolSpec
 Q_ADDRESSED = "addressed"
 Q_END_OF_TURN = "end_of_turn"
 Q_NEEDS_PLANNER = "needs_planner"
+Q_STOP = "stop"
 
 Q_TOOL = "tool"
 
@@ -101,6 +102,21 @@ def gate_questions() -> dict[str, Question]:
                 "opposed to a single direct reply or one obvious tool call."
             ),
             criteria="fulfilling this request requires multiple steps or tool calls",
+        ),
+        Q_STOP: Noul(
+            instructions=(
+                "daa may be part-way through something it was asked to do. Judge whether "
+                "this utterance is the speaker telling it to STOP -- 'stop', 'wait', "
+                "'no no no', 'cancel that', 'never mind', 'hold on'.\n"
+                "Judge the intent to halt, not the politeness of it, and not whether the "
+                "speaker gave a reason. A person interrupting a machine that is already "
+                "doing something rarely forms a complete sentence."
+            ),
+            # Read the asymmetry before tuning this. A false stop costs the user
+            # a repeat; a missed stop means the thing they are trying to halt
+            # carries on. There is no symmetric cost here, so `Settings.stop_p`
+            # is deliberately laxer than every other threshold in the product.
+            criteria="the speaker wants daa to stop what it is doing right now",
         ),
     }
 
