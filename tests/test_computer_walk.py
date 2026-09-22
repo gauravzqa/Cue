@@ -188,3 +188,32 @@ def test_the_apple_menu_is_identified_by_position_not_by_title(walk):
                         menu_bar=bar))
     assert "Bildschirm sperren" not in labels(snap)
     assert "Open" in labels(snap)
+
+
+# --- the coverage harness shares these rules -----------------------------------
+
+
+def test_the_coverage_harness_does_not_count_menus_as_window_controls():
+    """The harness had its own copy of the window walk. For a process that
+    lists the application as its own window, it descended app -> menu bar
+    and counted every menu item as a window control -- 474 on the live
+    fixture, against 5 real controls. That is the one number the harness
+    exists to measure, overstated by two orders of magnitude."""
+    from evals import ax_coverage
+
+    app = Node("AXApplication", "Fixture")
+    window = Node("AXWindow", "Account Settings").add(
+        Node("AXButton", "Frobnicate"), Node("AXButton", "Cancel")
+    )
+    menu = Node("AXMenuBar", "").add(
+        *[Node("AXMenuBarItem", f"Menu {i}").add(
+            Node("AXMenu", "").add(*[Node("AXMenuItem", f"Item {i}.{j}") for j in range(20)])
+        ) for i in range(6)]
+    )
+    app.add(app, window, menu)                 # itself, its window, its menu bar
+    api = ax_coverage.ReadOnlyAX(FakeAPI(app, windows=[app], menu_bar=menu))
+
+    row = ax_coverage.walk_app(APP, api)
+
+    assert row.nameable == 2, f"counted {row.nameable} window controls, expected the 2 buttons"
+    assert row.windows == 1

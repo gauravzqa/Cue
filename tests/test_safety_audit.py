@@ -192,10 +192,15 @@ def test_a_real_decide_call_on_a_synthetic_assessment_stays_marked(sink: JsonlAu
 def test_content_bearing_keys_are_redacted(sink: JsonlAudit, key: str) -> None:
     secret = "the launch code is 0451 and my password is hunter2"
     sink(AuditEvent(kind="execution", payload={key: secret, "path": "/tmp/notes.txt"}))
-    blob = sink.path.read_text()
-    assert "0451" not in blob and "hunter2" not in blob
-    assert "/tmp/notes.txt" in blob, "paths are the point of the log"
-    assert lines(sink)[0]["payload"][key] == f"<redacted {len(secret)} chars>"
+    # Search the PAYLOAD, not the whole line. The line carries a Unix
+    # timestamp, and a digits-only secret collides with the clock: this
+    # failed intermittently whenever `at` happened to contain "0451"
+    # (1790090451.33...), with the secret itself correctly redacted.
+    record = lines(sink)[0]
+    payload = json.dumps(record["payload"])
+    assert "0451" not in payload and "hunter2" not in payload
+    assert "/tmp/notes.txt" in payload, "paths are the point of the log"
+    assert record["payload"][key] == f"<redacted {len(secret)} chars>"
 
 
 def test_redaction_keeps_the_shape_so_the_log_is_still_debuggable(sink: JsonlAudit) -> None:

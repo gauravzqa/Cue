@@ -263,7 +263,13 @@ def walk_app(
             window_subrole="", in_alert=False, default_identity=None,
         )
 
-    windows = list(windows or [])
+    # The SAME window rules as the tools, not a second copy of them. This walk
+    # used to take kAXWindowsAttribute at face value, and for a process that
+    # lists the application as its own window it descended app -> menu bar and
+    # counted all 474 menu items as window controls -- reporting apps as far
+    # more usable than they are, which is the one number this harness exists
+    # to get right.
+    windows = ax._real_windows(api, list(windows or []))
     row.windows = len(windows)
     for w_index, win in enumerate(windows):
         stack: list[tuple[Any, int, tuple[int, ...]]] = [(win, 0, (w_index,))]
@@ -288,6 +294,9 @@ def walk_app(
             cerr, children = api.AXUIElementCopyAttributeValue(ref, api.kAXChildrenAttribute, None)
             if cerr == ax.AX_SUCCESS and children:
                 for c_index, child in reversed(list(enumerate(children))):
+                    role = ax._copy_str(api, child, api.kAXRoleAttribute)
+                    if role in ax._NOT_IN_A_WINDOW:
+                        continue
                     stack.append((child, depth + 1, (*path, c_index)))
 
     merr, menu_bar = api.AXUIElementCopyAttributeValue(app_ref, api.kAXMenuBarAttribute, None)
