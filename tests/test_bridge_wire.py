@@ -34,7 +34,6 @@ from daa.ui.bridge import Bridge, BridgeMic, DockConsole, Writer
 from daa.ui.protocol import Method, Request, Response
 from daa.voice.llm import FakeLLM, LLMTurn, ToolCall
 from daa.voice.loop import VoiceLoop
-from daa.voice.tts import FakeSpeaker
 
 TIMEOUT = 5.0  # only ever reached by a FAILING test
 
@@ -244,7 +243,6 @@ def harness(
     loop = VoiceLoop(
         settings=Settings(dry_run=dry_run),
         local_stt=None,
-        speaker=FakeSpeaker(),
         gate=None,
         router=None,
         risk=None,
@@ -400,7 +398,7 @@ def test_work_that_blows_up_does_not_end_the_mic():
     assert next(mic.segments()).pcm == b"still here"
 
 
-def test_onset_drives_barge_in_and_survives_a_listener_that_raises():
+def test_onset_reaches_the_listener_and_survives_one_that_raises():
     mic = BridgeMic()
     hits: list[int] = []
     mic.set_speech_listener(lambda: hits.append(1))
@@ -408,7 +406,7 @@ def test_onset_drives_barge_in_and_survives_a_listener_that_raises():
     assert hits == [1]
 
     def boom() -> None:
-        raise OSError("the speaker is gone")
+        raise OSError("the listener is gone")
 
     mic.set_speech_listener(boom)
     mic.onset()  # must not raise
@@ -705,13 +703,12 @@ def test_undo_with_a_row_answers_that_daa_is_asking_not_that_it_reversed():
         h.stop()
 
 
-def test_escape_stops_the_speaking_and_forgets_the_half_sentence():
+def test_escape_forgets_the_half_sentence():
     h = harness()
     h.start()
     try:
         h.hello()
         h.loop._pending = "move the screen"
-        h.loop.speaker.say("a long sentence")
         h.stdin.push(protocol.event(Method.CONTROL_CANCEL))
         h.out.wait(
             lambda fs: any(
@@ -721,7 +718,6 @@ def test_escape_stops_the_speaking_and_forgets_the_half_sentence():
             )
         )
         assert h.loop._pending == ""
-        assert h.loop.speaker.stops >= 1
     finally:
         h.stop()
 

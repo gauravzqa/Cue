@@ -16,9 +16,9 @@ Control flow for one segment of speech:
       -> tool.resolve()                    (concrete targets, still no mutation)
       -> RiskGate.assess()                 (judgment about the RESOLVED action)
       -> policy.decide()                   (the only thing that may authorize)
-      -> SILENT: run | ANNOUNCE: run+speak | CONFIRM_VOICE: read back, ask
+      -> SILENT: run | ANNOUNCE: run+say | CONFIRM_VOICE: read back, ask
                                            | CONFIRM_VISUAL: print it, type yes
-      -> run -> UndoJournal.record -> TTS
+      -> run -> UndoJournal.record -> the reply, as text
 
 The single most important invariant in this file: `_execute` is the ONLY place
 that calls the tool, and it will not do so without a Disposition object whose
@@ -98,7 +98,6 @@ from daa.voice.llm import LLM, LLMTurn, ToolCall
 from daa.voice.mic import AudioChunk, AudioSource
 from daa.voice.stt import STTUnavailable, Transcriber, Transcription
 from daa.voice.transcript import Transcript
-from daa.voice.tts import Speaker
 
 # Spoken when a safety component is missing. Fail closed and SAY so -- silent
 # degradation of the safety layer is how an assistant deletes something.
@@ -174,9 +173,9 @@ class TurnOutcome:
 class TerminalConsole:
     """stdin/stdout, used only for the typed CONFIRM_VISUAL approval.
 
-    Separate from Speaker because the whole point of the tier is that the
-    approval does NOT travel over the audio channel. Injected so tests can
-    drive both the approve and the no-terminal path without a pty.
+    Separate from `_say` because the whole point of the tier is that the
+    approval is TYPED, not spoken back at a prompt daa wrote. Injected so
+    tests can drive both the approve and the no-terminal path without a pty.
     """
 
     name = "terminal"
@@ -208,7 +207,6 @@ class VoiceLoop:
         mic: AudioSource | None = None,
         local_stt: Transcriber | None = None,
         cloud_stt: Transcriber | None = None,
-        speaker: Speaker | None = None,
         gate: Any = None,
         router: Any = None,
         risk: Any = None,
@@ -230,7 +228,6 @@ class VoiceLoop:
         self.mic = mic
         self.local_stt = local_stt
         self.cloud_stt = cloud_stt
-        self.speaker = speaker
         self.gate = gate
         self.router = router
         self.risk = risk
@@ -248,7 +245,10 @@ class VoiceLoop:
         self._segments: Iterator[AudioChunk] | None = None
         # Replies for confirmation when there is no mic (the `daa say` path).
         self._scripted_replies: list[str] = []
-        self.barge_ins = 0
+        # Every line daa has said this session, asides included. The
+        # transcript deliberately excludes notices (see `_say_aside`), so this
+        # is the only complete record of what reached the user.
+        self.said: list[str] = []
         self.outcomes: list[TurnOutcome] = []
 
         # --- async execution and scoped consent ---------------------------
@@ -316,33 +316,27 @@ class VoiceLoop:
             return
         self._send(event)
 
-    def _speak(self, text: str, outcome: TurnOutcome | None = None) -> None:
+    def _say(self, text: str, outcome: TurnOutcome | None = None) -> None:
+        """One sentence from daa to the user. Text, and only text.
+
+        daa has no audio out. This is the whole output channel, and it has
+        three consumers: the turn outcome, which the CLI prints; the
+        transcript, which the model sees next turn; and the `spoke` audit
+        event, which the dock projects into a `speak` frame and a transcript
+        line. Removing any of them is removing daa's voice, not its speaker.
+        """
         if not text:
             return
         if outcome is not None:
             outcome.spoken.append(text)
+        self.said.append(text)
         self.transcript.add_assistant(text)
         self._emit("spoke", text=text)
-        if self.speaker is not None:
-            try:
-                self.speaker.say(text)
-            except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
-                # The tool may already have run. Losing the sentence is bad;
-                # raising after a mutation is worse.
-                self._emit("error", where="speak", error=str(exc))
-
-    def _on_speech_start(self) -> None:
-        """Barge-in. Wired to the mic's VAD onset, fires on any thread."""
-        if self.speaker is not None and self.speaker.is_speaking():
-            self.barge_ins += 1
-            self.speaker.stop()
-            self._emit("barge_in", at=time.time())
 
     def _context(self, **extra: Any) -> Mapping[str, Any]:
         return self.transcript.as_state(
             always_on=getattr(self.settings, "always_on", False),
             dry_run=getattr(self.settings, "dry_run", True),
-            speaking=bool(self.speaker is not None and self.speaker.is_speaking()),
             pending_text=self._pending or None,
             **extra,
         )
@@ -353,7 +347,6 @@ class VoiceLoop:
         """Consume the mic until it is exhausted (FakeMic) or closed."""
         if self.mic is None:
             raise RuntimeError("VoiceLoop.run needs a mic; use handle_text for the say path")
-        self.mic.set_speech_listener(self._on_speech_start)
         self._segments = self.mic.segments()
         for seen, chunk in enumerate(self._segments, start=1):
             self.handle_chunk(chunk)
@@ -555,7 +548,7 @@ class VoiceLoop:
         # hands. The model wrote that sentence before policy had an opinion, so
         # speaking it after a refusal makes us agree to what we just declined.
         if turn.text and not outcome.handled_calls:
-            self._speak(turn.text, outcome)
+            self._say(turn.text, outcome)
 
     def _ask_llm(self, specs: Sequence[ToolSpec]) -> LLMTurn:
         if self.llm is None:
@@ -580,17 +573,17 @@ class VoiceLoop:
         """
         if self.registry is None:
             self._emit("error", where="registry", tool=name, error="no registry wired")
-            self._speak(_NO_TOOL, outcome)
+            self._say(_NO_TOOL, outcome)
             return None
         try:
             tool = self.registry.get(name)
         except Exception as exc:  # noqa: BLE001 -- KeyError today, anything tomorrow
             self._emit("error", where="registry", tool=name, error=str(exc))
-            self._speak(_NO_TOOL, outcome)
+            self._say(_NO_TOOL, outcome)
             return None
         if tool is None or not isinstance(getattr(tool, "spec", None), ToolSpec):
             self._emit("error", where="registry", tool=name, error="unknown tool")
-            self._speak(_NO_TOOL, outcome)
+            self._say(_NO_TOOL, outcome)
             return None
         return tool
 
@@ -645,7 +638,7 @@ class VoiceLoop:
             action = tool.resolve(**dict(call.args))
         except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
             self._emit("error", where="resolve", tool=call.name, error=str(exc))
-            self._speak("I couldn't work out what you meant by that.", outcome)
+            self._say("I couldn't work out what you meant by that.", outcome)
             return False
 
         assessment = self._assess(action, utterance)
@@ -741,7 +734,7 @@ class VoiceLoop:
         # never spend a confirmation on an action that cannot happen.
         if not action.targets and tool.spec.floor >= RiskTier.ANNOUNCE:
             why = str(action.args.get("reason") or "").strip()
-            self._speak(why or f"I could not work out what to {action.verb or 'do'}.", outcome)
+            self._say(why or f"I could not work out what to {action.verb or 'do'}.", outcome)
             self._emit(
                 "unresolved",
                 tool=tool.spec.name,
@@ -752,7 +745,7 @@ class VoiceLoop:
             return False
 
         if tier is RiskTier.REFUSE:
-            self._speak(
+            self._say(
                 _NO_POLICY if disposition.reason == "safety policy unavailable"
                 else f"I won't do that. {disposition.reason}",
                 outcome,
@@ -802,7 +795,7 @@ class VoiceLoop:
 
         if tier is RiskTier.CONFIRM_VOICE:
             if self.confirm is None:
-                self._speak(_NO_CONFIRM, outcome)
+                self._say(_NO_CONFIRM, outcome)
                 self._emit("refused", tool=tool.spec.name, reason="no confirm parser")
                 return False
             if not self._confirm(action, outcome):
@@ -880,7 +873,7 @@ class VoiceLoop:
         already told us the interaction is broken, and a third prompt is how a
         voice assistant becomes something people unplug.
         """
-        self._speak(f"Should I {_phrase(action)}?", outcome)
+        self._say(f"Should I {_phrase(action)}?", outcome)
         self._confirming += 1
         try:
             return self._confirm_loop(action, outcome)
@@ -896,7 +889,7 @@ class VoiceLoop:
         for attempt in (0, 1):
             reply = self._next_reply()
             if reply is None:
-                self._speak("I didn't hear an answer, so I'll leave it.", outcome)
+                self._say("I didn't hear an answer, so I'll leave it.", outcome)
                 self._logged(log, action, granted=False)
                 return False
             try:
@@ -912,12 +905,12 @@ class VoiceLoop:
                 self._logged(log, action, granted=True)
                 return True
             if verdict == "no":
-                self._speak("Okay, leaving it.", outcome)
+                self._say("Okay, leaving it.", outcome)
                 self._logged(log, action, granted=False)
                 return False
             if attempt == 0:
-                self._speak("Sorry — yes or no?", outcome)
-        self._speak("I'll leave it for now.", outcome)
+                self._say("Sorry — yes or no?", outcome)
+        self._say("I'll leave it for now.", outcome)
         self._logged(log, action, granted=False)
         return False
 
@@ -944,7 +937,7 @@ class VoiceLoop:
         """
         console = self.console
         if console is None or not _console_available(console):
-            self._speak(_NO_SCREEN, outcome)
+            self._say(_NO_SCREEN, outcome)
             self._emit(
                 "deferred_visual",
                 tool=tool.spec.name,
@@ -998,7 +991,7 @@ class VoiceLoop:
         )
         self._confirmation_logged(action, granted=granted, via="visual")
         if not granted:
-            self._speak("Okay, leaving it.", outcome)
+            self._say("Okay, leaving it.", outcome)
             self._emit("abandoned", tool=tool.spec.name, target_count=len(action.targets))
         return granted
 
@@ -1032,7 +1025,7 @@ class VoiceLoop:
         outcome = TurnOutcome(utterance="undo", woke=True)
         self._scripted_replies = list(replies)
         if self.journal is None:
-            self._speak("I don't have an undo journal.", outcome)
+            self._say("I don't have an undo journal.", outcome)
             self.outcomes.append(outcome)
             return outcome
 
@@ -1040,12 +1033,12 @@ class VoiceLoop:
             entry = self.journal.peek()
         except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
             self._emit("error", where="journal", error=str(exc))
-            self._speak("I couldn't read the undo journal.", outcome)
+            self._say("I couldn't read the undo journal.", outcome)
             self.outcomes.append(outcome)
             return outcome
 
         if entry is None:
-            self._speak("There's nothing to undo.", outcome)
+            self._say("There's nothing to undo.", outcome)
             self.outcomes.append(outcome)
             return outcome
 
@@ -1056,7 +1049,7 @@ class VoiceLoop:
 
         refusal = self._undo_refusal(entry)
         if refusal is not None:
-            self._speak(_UNDO_UNVERIFIED, outcome)
+            self._say(_UNDO_UNVERIFIED, outcome)
             self._emit("undo_rejected", tool=tool_name, reason=refusal, entry_id=entry_id)
             self._emit_built(
                 "undo_event",
@@ -1075,7 +1068,7 @@ class VoiceLoop:
         if stale:
             # Say it BEFORE the confirmation question, so the yes is a yes to
             # the world as it is now rather than as it was when we recorded.
-            self._speak(str(stale), outcome)
+            self._say(str(stale), outcome)
 
         ran = self._handle_call(
             ToolCall(name=tool_name, args=dict(getattr(entry, "args", {}) or {})),
@@ -1256,7 +1249,7 @@ class VoiceLoop:
             "grant_event", grant, granted=granted, tools=sorted(s.name for s in specs)
         )
         if not granted:
-            self._speak("Okay, leaving it.", outcome)
+            self._say("Okay, leaving it.", outcome)
             return None
         self.grants.add(grant)
         self.active_grant = grant
@@ -1264,9 +1257,9 @@ class VoiceLoop:
 
     def _grant_spoken(self, grant: Grant, outcome: TurnOutcome) -> bool:
         if self.confirm is None:
-            self._speak(_NO_CONFIRM, outcome)
+            self._say(_NO_CONFIRM, outcome)
             return False
-        self._speak(grant.plan_summary, outcome)
+        self._say(grant.plan_summary, outcome)
         pending = ResolvedAction(
             tool="grant",
             args={},
@@ -1282,7 +1275,7 @@ class VoiceLoop:
     def _grant_typed(self, grant: Grant, specs: Sequence[ToolSpec], outcome: TurnOutcome) -> bool:
         console = self.console
         if console is None or not _console_available(console):
-            self._speak(_NO_SCREEN, outcome)
+            self._say(_NO_SCREEN, outcome)
             return False
         grant_mod = _grant_module()
         typed = ""
@@ -1644,28 +1637,24 @@ class VoiceLoop:
                 "notice_event", job_id="", spoken=False, reason="stale", pending=expired
             )
         if text:
-            self._speak_aside(text, outcome)
+            self._say_aside(text, outcome)
         return text
 
-    def _speak_aside(self, text: str, outcome: TurnOutcome | None = None) -> None:
-        """Speak something that is NOT part of the conversation.
+    def _say_aside(self, text: str, outcome: TurnOutcome | None = None) -> None:
+        """Say something that is NOT part of the conversation.
 
-        Deliberately not `_speak`: a notice must never enter the transcript,
+        Deliberately not `_say`: a notice must never enter the transcript,
         because the transcript is what the LLM sees next turn. A notice is not
         an utterance -- it may not re-enter the address gate, may not reach the
-        model, and may not start a turn or a tool call. It is TTS, from a
-        string a job produced, and nothing else.
+        model, and may not start a turn or a tool call. It is one line of text
+        from a string a job produced, and nothing else.
         """
         if not text:
             return
         if outcome is not None:
             outcome.spoken.append(text)
+        self.said.append(text)
         self._emit("spoke_aside", chars=len(text))
-        if self.speaker is not None:
-            try:
-                self.speaker.say(text)
-            except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
-                self._emit("error", where="speak", error=str(exc))
 
     # -- checkpoints -------------------------------------------------------
 
@@ -1688,13 +1677,13 @@ class VoiceLoop:
         outcome = TurnOutcome(utterance="rollback", woke=True)
         self._scripted_replies = list(replies)
         if self.journal is None or not hasattr(self.journal, "window"):
-            self._speak("I don't have a record of that stretch.", outcome)
+            self._say("I don't have a record of that stretch.", outcome)
             self.outcomes.append(outcome)
             return outcome
         entries = list(self.journal.window(checkpoint_id))
         sealed_reason = self.journal.seal_reason(checkpoint_id) or ""
         if not entries:
-            self._speak(_ROLLBACK_NOTHING, outcome)
+            self._say(_ROLLBACK_NOTHING, outcome)
             self.outcomes.append(outcome)
             return outcome
 
@@ -1706,7 +1695,7 @@ class VoiceLoop:
                 f"I can put back the {_count(len(entries))} I did, "
                 f"but {sealed_reason.rstrip('.')}. Should I?"
             )
-        self._speak(question, outcome)
+        self._say(question, outcome)
         pending = ResolvedAction(
             tool="rollback", args={}, targets=(), verb="put that stretch back"
         )
@@ -1716,7 +1705,7 @@ class VoiceLoop:
         finally:
             self._confirming -= 1
         if not agreed:
-            self._speak("Okay, leaving it.", outcome)
+            self._say("Okay, leaving it.", outcome)
             self._emit_built(
                 "rollback_event",
                 checkpoint_id=checkpoint_id,
@@ -1752,7 +1741,7 @@ class VoiceLoop:
             self._commit_undo(entry)
             done += 1
 
-        self._speak(_rollback_summary(done, len(entries), stopped, sealed_reason), outcome)
+        self._say(_rollback_summary(done, len(entries), stopped, sealed_reason), outcome)
         self._emit_built(
             "rollback_event",
             checkpoint_id=checkpoint_id,
@@ -1877,10 +1866,10 @@ class VoiceLoop:
                     **link,
                 )
                 if not quiet:
-                    self._speak("That didn't work.", outcome)
+                    self._say("That didn't work.", outcome)
                 return False
             ran_for_real = bool(result.ok)
-            # Record BEFORE speaking: if TTS hangs, the undo must still exist.
+            # Record BEFORE the readback: the undo must exist first.
             entry_id = self._record_undo(
                 tool, result, checkpoint_id=checkpoint_id or result.checkpoint_id
             )
@@ -1901,7 +1890,7 @@ class VoiceLoop:
         outcome.results.append(result)
         if not result.ok:
             if not quiet:
-                self._speak(result.summary or "That didn't work.", outcome)
+                self._say(result.summary or "That didn't work.", outcome)
             return False
         # SILENT means silent: read-only actions the user did not ask to hear
         # about are exactly the ones that make an assistant feel chatty. `quiet`
@@ -1909,7 +1898,7 @@ class VoiceLoop:
         # is the loudest possible way to be in the background, so its steps say
         # nothing and the job posts ONE notice when it is done.
         if disposition.tier is not RiskTier.SILENT and not quiet:
-            self._speak(result.summary, outcome)
+            self._say(result.summary, outcome)
         return ran_for_real
 
 
@@ -2102,7 +2091,6 @@ def build_loop(settings: Any, *, mic: AudioSource | None = None, audit: Any = No
     """
     from daa.voice import llm as llm_mod
     from daa.voice import stt as stt_mod
-    from daa.voice import tts as tts_mod
 
     missing: list[str] = []
 
@@ -2203,7 +2191,6 @@ def build_loop(settings: Any, *, mic: AudioSource | None = None, audit: Any = No
         mic=mic,
         local_stt=stt_mod.build_local(settings),
         cloud_stt=stt_mod.build_cloud(settings),
-        speaker=tts_mod.build_speaker(settings),
         gate=gate,
         router=router,
         risk=risk,

@@ -16,13 +16,11 @@ from daa.voice.llm import FakeLLM, LLMTurn, ToolCall
 from daa.voice.loop import VoiceLoop
 from daa.voice.mic import FakeMic
 from daa.voice.stt import FakeTranscriber
-from daa.voice.tts import FakeSpeaker
 
 KEYS = (
     "TYPESAFE_API_KEY",
     "DEEPSEEK_API_KEY",
     "ASSEMBLYAI_API_KEY",
-    "INWORLD_API_KEY",
     "OPENAI_API_KEY",
 )
 
@@ -95,7 +93,7 @@ def test_doctor_reports_missing_keys_without_printing_them(
 def test_doctor_names_every_provider_live_or_fake(capsys: pytest.CaptureFixture[str]):
     cli.main(["doctor"])
     out = capsys.readouterr().out
-    for provider in ("mic", "stt.local", "stt.cloud", "tts", "llm", "jev"):
+    for provider in ("mic", "stt.local", "stt.cloud", "llm", "jev"):
         assert provider in out
     assert "fake" in out
 
@@ -115,7 +113,7 @@ def test_doctor_flags_an_unwired_safety_policy(capsys: pytest.CaptureFixture[str
 
 
 def test_say_works_end_to_end_with_no_keys(capsys: pytest.CaptureFixture[str]):
-    assert cli.main(["say", "hello", "--silent"]) == 0
+    assert cli.main(["say", "hello"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("daa>")
 
@@ -124,7 +122,7 @@ def test_say_prints_every_spoken_line(monkeypatch: pytest.MonkeyPatch,
                                       capsys: pytest.CaptureFixture[str]):
     loop, _spy = _stub_loop(tier=RiskTier.ANNOUNCE)
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["say", "move", "the", "screenshots", "--silent"])
+    cli.main(["say", "move", "the", "screenshots"])
     assert "daa> Moved three files." in capsys.readouterr().out
 
 
@@ -133,7 +131,7 @@ def test_say_passes_scripted_replies_to_the_confirmation(
 ):
     loop, spy = _stub_loop(tier=RiskTier.CONFIRM_VOICE, verdicts=["yes"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["say", "move them", "--reply", "yes", "--silent"])
+    cli.main(["say", "move them", "--reply", "yes"])
     assert len(spy.runs) == 1
 
 
@@ -142,7 +140,7 @@ def test_say_without_a_reply_abandons_a_confirmation(
 ):
     loop, spy = _stub_loop(tier=RiskTier.CONFIRM_VOICE, verdicts=["yes"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["say", "move them", "--silent"])
+    cli.main(["say", "move them"])
     assert spy.runs == [], "a CLI confirmation ran with nobody to answer it"
 
 
@@ -164,7 +162,7 @@ def test_listen_refuses_when_the_safety_policy_is_not_wired(
 def test_listen_consumes_the_mic_and_cleans_up(monkeypatch: pytest.MonkeyPatch):
     loop, spy = _stub_loop(tier=RiskTier.ANNOUNCE, utterances=["move them"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    assert cli.main(["listen", "--silent"]) == 0
+    assert cli.main(["listen"]) == 0
     assert len(spy.runs) == 1
     assert loop.mic._closed is True
 
@@ -210,7 +208,7 @@ def test_undo_with_an_empty_journal(monkeypatch: pytest.MonkeyPatch,
                                     capsys: pytest.CaptureFixture[str]):
     loop, _spy = _stub_loop()
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    assert cli.main(["undo", "--silent"]) == 0
+    assert cli.main(["undo"]) == 0
     assert "nothing to undo" in capsys.readouterr().out.lower()
 
 
@@ -218,11 +216,11 @@ def test_undo_reverses_the_last_mutation(monkeypatch: pytest.MonkeyPatch,
                                          capsys: pytest.CaptureFixture[str]):
     loop, spy = _stub_loop(tier=RiskTier.ANNOUNCE, utterances=["move them"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["listen", "--silent"])
+    cli.main(["listen"])
     spy.runs.clear()
     # --yes: undo is never below CONFIRM_VOICE, because the instruction came
     # out of a file rather than out of the user's mouth.
-    cli.main(["undo", "--yes", "--silent"])
+    cli.main(["undo", "--yes"])
     assert len(spy.runs) == 1
     assert loop.journal.committed == ["e0"], "the journal entry was not spent"
 
@@ -235,10 +233,10 @@ def test_undo_without_an_answer_leaves_the_journal_alone(
     was gone whether or not anything was undone."""
     loop, spy = _stub_loop(tier=RiskTier.ANNOUNCE, utterances=["move them"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["listen", "--silent"])
+    cli.main(["listen"])
     spy.runs.clear()
 
-    assert cli.main(["undo", "--silent"]) == 0
+    assert cli.main(["undo"]) == 0
     assert spy.runs == []
     assert loop.journal.committed == []
     assert loop.journal.peek() is not None, "the undo record was thrown away"
@@ -248,7 +246,7 @@ def test_undo_list_shows_the_journal(monkeypatch: pytest.MonkeyPatch,
                                      capsys: pytest.CaptureFixture[str]):
     loop, _spy = _stub_loop(tier=RiskTier.ANNOUNCE, utterances=["move them"])
     monkeypatch.setattr(cli, "_build", lambda settings, **kw: loop)
-    cli.main(["listen", "--silent"])
+    cli.main(["listen"])
     capsys.readouterr()
     assert cli.main(["undo", "--list"]) == 0
     assert "move them back" in capsys.readouterr().out
@@ -360,7 +358,6 @@ def _stub_loop(*, tier: RiskTier = RiskTier.SILENT, utterances=(), verdicts=("ye
         settings=Settings(dry_run=False),
         mic=FakeMic(utterances=list(utterances)),
         local_stt=FakeTranscriber(source="local"),
-        speaker=FakeSpeaker(),
         registry=_Registry(tool),
         policy_decide=lambda a, s, r, st: Disposition(tier=tier, reason="stub"),
         journal=_Journal(),

@@ -120,8 +120,8 @@ class Transcript:
         """The Jev `state` payload.
 
         Flat, JSON-safe and small. `extra` is where the loop adds the one or
-        two situational facts a given question needs (pending action, whether
-        TTS is playing) rather than growing this class a field per caller.
+        two situational facts a given question needs (the pending action, the
+        dry-run flag) rather than growing this class a field per caller.
         """
         state: dict[str, Any] = {
             "conversation": self.recent(),

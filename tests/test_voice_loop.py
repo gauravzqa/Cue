@@ -35,7 +35,6 @@ from daa.voice.llm import FakeLLM, LLMTurn, ToolCall
 from daa.voice.loop import TurnOutcome, VoiceLoop
 from daa.voice.mic import FakeMic
 from daa.voice.stt import FakeTranscriber
-from daa.voice.tts import FakeSpeaker
 
 # ---------------------------------------------------------------------------
 # Stubs for the three sibling subsystems
@@ -262,7 +261,7 @@ def build(
     dry_run: bool = False,
     tools: Sequence[SpyTool] | None = None,
     specs_extra: Sequence[ToolSpec] = (),
-) -> tuple[VoiceLoop, SpyTool, FakeSpeaker, list[AuditEvent]]:
+) -> tuple[VoiceLoop, SpyTool, list[str], list[AuditEvent]]:
     spy = SpyTool(spec=MOVE, undo=UndoAction(description="move them back", tool="move_files",
                                              args={"src": "b", "dest": "a"}))
     registry = StubRegistry()
@@ -271,13 +270,11 @@ def build(
     for extra in specs_extra:
         registry.register(SpyTool(spec=extra))
     events: list[AuditEvent] = []
-    speaker = FakeSpeaker()
     loop = VoiceLoop(
         settings=Settings(dry_run=dry_run),
         mic=FakeMic(utterances=list(utterances)),
         local_stt=FakeTranscriber(source="local"),
         cloud_stt=cloud,
-        speaker=speaker,
         gate=gate if gate is not None else StubGate(),
         router=StubRouter(),
         risk=StubRisk(),
@@ -290,7 +287,7 @@ def build(
         if llm is not None
         else FakeLLM(turns=[LLMTurn(tool_calls=(ToolCall("move_files", {"src": "a", "dest": "b"}),))]),
     )
-    return loop, spy, speaker, events
+    return loop, spy, loop.said, events
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +298,7 @@ def build(
 def test_unaddressed_speech_is_dropped_and_never_leaves_the_laptop():
     llm = FakeLLM()
     cloud = FakeTranscriber(source="cloud")
-    loop, spy, speaker, events = build(
+    loop, spy, said, events = build(
         utterances=["so anyway I told him no"],
         gate=StubGate(default=StubWake(wake=False, addressed_p=0.02)),
         llm=llm,
@@ -315,7 +312,7 @@ def test_unaddressed_speech_is_dropped_and_never_leaves_the_laptop():
     assert cloud.calls == [], "cloud STT ran on speech that never woke the gate"
     assert llm.seen == [], "the conversational model saw unaddressed speech"
     assert spy.runs == []
-    assert speaker.said == []
+    assert said == []
     # And the drop is logged WITHOUT the text.
     dropped = [e for e in events if e.kind == "dropped"]
     assert len(dropped) == 1
@@ -324,7 +321,7 @@ def test_unaddressed_speech_is_dropped_and_never_leaves_the_laptop():
 
 def test_mid_utterance_buffers_then_acts_on_the_whole_sentence():
     gate = StubGate(decisions=[StubWake(end_of_turn=False), StubWake()])
-    loop, spy, _speaker, _events = build(
+    loop, spy, _said, _events = build(
         utterances=["move the screenshots", "into the ferrari folder"],
         gate=gate,
         tier=RiskTier.SILENT,
@@ -341,19 +338,19 @@ def test_gate_failure_fails_closed():
         def should_wake(self, transcript, ctx):
             raise RuntimeError("typesafe is down")
 
-    loop, spy, speaker, _events = build(utterances=["delete everything"], gate=Exploding())
+    loop, spy, said, _events = build(utterances=["delete everything"], gate=Exploding())
     outcomes = loop.run()
 
     assert outcomes[0].woke is False
     assert spy.runs == []
-    assert speaker.said == []
+    assert said == []
 
 
 def test_cloud_rescore_is_what_reaches_the_tool():
     cloud = FakeTranscriber(source="cloud", rescore={"move the ferari screen shots":
                                                      "move the Ferrari screenshots"})
     llm = FakeLLM()
-    loop, _spy, _speaker, _events = build(
+    loop, _spy, _said, _events = build(
         utterances=["move the ferari screen shots"], cloud=cloud, llm=llm, tier=RiskTier.SILENT
     )
     outcomes = loop.run()
@@ -370,49 +367,49 @@ def test_cloud_rescore_is_what_reaches_the_tool():
 
 
 def test_silent_tier_runs_without_speaking():
-    loop, spy, speaker, _events = build(utterances=["tidy up"], tier=RiskTier.SILENT)
+    loop, spy, said, _events = build(utterances=["tidy up"], tier=RiskTier.SILENT)
     loop.run()
 
     assert len(spy.runs) == 1
-    assert speaker.said == [], "SILENT tier spoke"
+    assert said == [], "SILENT tier spoke"
 
 
 def test_announce_tier_runs_then_speaks_the_summary():
-    loop, spy, speaker, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, spy, said, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
 
     assert len(spy.runs) == 1
-    assert speaker.said == ["Moved three files."]
+    assert said == ["Moved three files."]
 
 
 def test_confirm_yes_reads_back_resolved_targets_then_runs():
     confirm = StubConfirm(verdicts=["yes"])
-    loop, spy, speaker, _events = build(
+    loop, spy, said, _events = build(
         utterances=["move them", "yeah go on"], tier=RiskTier.CONFIRM_VOICE, confirm=confirm
     )
     loop.run()
 
     # The readback is of RESOLVED targets, not of the raw utterance.
-    assert "a, b" in speaker.said[0]
+    assert "a, b" in said[0]
     assert confirm.calls == ["yeah go on"]
     assert len(spy.runs) == 1
 
 
 def test_confirm_no_never_runs():
     confirm = StubConfirm(verdicts=["no"])
-    loop, spy, speaker, events = build(
+    loop, spy, said, events = build(
         utterances=["move them", "no don't"], tier=RiskTier.CONFIRM_VOICE, confirm=confirm
     )
     loop.run()
 
     assert spy.runs == [], "tool.run was reachable after a 'no'"
-    assert "Okay, leaving it." in speaker.said
+    assert "Okay, leaving it." in said
     assert any(e.kind == "abandoned" for e in events)
 
 
 def test_unclear_reasks_exactly_once_then_abandons():
     confirm = StubConfirm(verdicts=["unclear", "unclear", "yes"])
-    loop, spy, speaker, _events = build(
+    loop, spy, said, _events = build(
         utterances=["move them", "hmm", "uh"],
         tier=RiskTier.CONFIRM_VOICE,
         confirm=confirm,
@@ -422,18 +419,18 @@ def test_unclear_reasks_exactly_once_then_abandons():
     assert spy.runs == [], "tool.run was reachable after two unclear answers"
     # Asked once, re-asked once, then stopped. Never a third prompt.
     assert len(confirm.calls) == 2
-    assert speaker.said.count("Sorry — yes or no?") == 1
-    assert speaker.said[-1] == "I'll leave it for now."
+    assert said.count("Sorry — yes or no?") == 1
+    assert said[-1] == "I'll leave it for now."
 
 
 def test_confirm_with_no_answer_abandons():
-    loop, spy, speaker, _events = build(
+    loop, spy, said, _events = build(
         utterances=["move them"], tier=RiskTier.CONFIRM_VOICE, confirm=StubConfirm()
     )
     loop.run()
 
     assert spy.runs == []
-    assert speaker.said[-1] == "I didn't hear an answer, so I'll leave it."
+    assert said[-1] == "I didn't hear an answer, so I'll leave it."
 
 
 def test_confirm_parser_failure_is_treated_as_unclear():
@@ -441,7 +438,7 @@ def test_confirm_parser_failure_is_treated_as_unclear():
         def interpret(self, reply, pending):
             raise RuntimeError("jev down")
 
-    loop, spy, _speaker, _events = build(
+    loop, spy, _said, _events = build(
         utterances=["move them", "yes", "yes"],
         tier=RiskTier.CONFIRM_VOICE,
         confirm=Exploding(),
@@ -452,16 +449,16 @@ def test_confirm_parser_failure_is_treated_as_unclear():
 
 
 def test_refuse_never_runs():
-    loop, spy, speaker, _events = build(utterances=["rm -rf /"], tier=RiskTier.REFUSE)
+    loop, spy, said, _events = build(utterances=["rm -rf /"], tier=RiskTier.REFUSE)
     loop.run()
 
     assert spy.runs == []
-    assert speaker.said and speaker.said[0].startswith("I won't do that.")
+    assert said and said[0].startswith("I won't do that.")
 
 
 def test_visual_tier_never_runs_from_voice():
     confirm = StubConfirm(verdicts=["yes", "yes", "yes"])
-    loop, spy, speaker, events = build(
+    loop, spy, said, events = build(
         utterances=["send it", "yes", "yes"],
         tier=RiskTier.CONFIRM_VISUAL,
         confirm=confirm,
@@ -471,22 +468,22 @@ def test_visual_tier_never_runs_from_voice():
     assert spy.runs == [], "a spoken yes authorized CONFIRM_VISUAL"
     assert confirm.calls == [], "the visual tier asked for a spoken confirmation"
     assert any(e.kind == "deferred_visual" for e in events)
-    assert "screen" in speaker.said[0]
+    assert "screen" in said[0]
 
 
 def test_missing_policy_refuses_everything():
-    loop, spy, speaker, _events = build(utterances=["move them"], policy=None)
+    loop, spy, said, _events = build(utterances=["move them"], policy=None)
     loop.run()
 
     assert spy.runs == []
-    assert speaker.said == ["I can't act right now, my safety policy isn't loaded."]
+    assert said == ["I can't act right now, my safety policy isn't loaded."]
 
 
 def test_policy_error_fails_closed():
     def exploding(action, spec, assessment, settings):
         raise ValueError("bad tier")
 
-    loop, spy, _speaker, _events = build(utterances=["move them"], policy=exploding)
+    loop, spy, _said, _events = build(utterances=["move them"], policy=exploding)
     loop.run()
 
     assert spy.runs == []
@@ -495,7 +492,7 @@ def test_policy_error_fails_closed():
 def test_policy_may_only_raise_above_the_tool_floor():
     """The stub policy honours the floor; assert the loop passes the spec through
     so the real policy can see it."""
-    loop, _spy, _speaker, _events = build(utterances=["move them"], tier=RiskTier.SILENT)
+    loop, _spy, _said, _events = build(utterances=["move them"], tier=RiskTier.SILENT)
     loop.run()
     seen = loop.policy_decide.seen  # type: ignore[attr-defined]
     assert seen and seen[0][0] == "move_files"
@@ -521,7 +518,7 @@ def test_execute_is_the_only_caller_of_tool_run():
 
 
 def test_execute_rejects_a_missing_disposition():
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = spy.resolve(src="a", dest="b")
     with pytest.raises(AssertionError):
         loop._execute(spy, action, None, TurnOutcome(), confirmed=False)
@@ -530,7 +527,7 @@ def test_execute_rejects_a_missing_disposition():
 
 @pytest.mark.parametrize("tier", [RiskTier.REFUSE, RiskTier.CONFIRM_VISUAL])
 def test_execute_rejects_unauthorizable_tiers(tier: RiskTier):
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = spy.resolve(src="a", dest="b")
     with pytest.raises(AssertionError):
         loop._execute(spy, action, Disposition(tier=tier, reason="x"), TurnOutcome(),
@@ -539,7 +536,7 @@ def test_execute_rejects_unauthorizable_tiers(tier: RiskTier):
 
 
 def test_execute_rejects_unconfirmed_confirm_tier():
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = spy.resolve(src="a", dest="b")
     with pytest.raises(AssertionError):
         loop._execute(
@@ -553,12 +550,12 @@ def test_execute_rejects_unconfirmed_confirm_tier():
 
 
 # ---------------------------------------------------------------------------
-# Undo, dry run, routing, barge-in, audit
+# Undo, dry run, routing, audit
 # ---------------------------------------------------------------------------
 
 
 def test_undo_is_recorded_before_the_summary_is_spoken():
-    loop, _spy, _speaker, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, _spy, _said, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
 
     assert len(loop.journal.entries) == 1
@@ -569,18 +566,18 @@ def test_undo_is_recorded_before_the_summary_is_spoken():
 
 
 def test_dry_run_never_reaches_the_tool():
-    loop, spy, speaker, events = build(utterances=["move them"], dry_run=True)
+    loop, spy, said, events = build(utterances=["move them"], dry_run=True)
     loop.run()
 
     assert spy.runs == [], "dry run mutated"
     assert spy.resolves, "dry run skipped resolve, so it narrated nothing real"
-    assert speaker.said[0].startswith("Dry run:")
+    assert said[0].startswith("Dry run:")
     assert any(e.kind == "dry_run" for e in events)
 
 
 def test_router_narrows_what_the_model_sees():
     llm = FakeLLM()
-    loop, _spy, _speaker, _events = build(
+    loop, _spy, _said, _events = build(
         utterances=["what's the weather"], llm=llm, specs_extra=[WEATHER]
     )
     loop.router.keep = ("get_weather",)
@@ -595,31 +592,20 @@ def test_router_failure_falls_back_to_every_tool():
             raise RuntimeError("jev down")
 
     llm = FakeLLM()
-    loop, _spy, _speaker, _events = build(utterances=["move them"], llm=llm, specs_extra=[WEATHER])
+    loop, _spy, _said, _events = build(utterances=["move them"], llm=llm, specs_extra=[WEATHER])
     loop.router = Exploding()
     loop.run()
 
     assert set(llm.seen[0][1]) == {"move_files", "get_weather"}
 
 
-def test_barge_in_cuts_speech_on_the_next_utterance():
-    loop, _spy, speaker, events = build(
-        utterances=["move them", "actually stop"], tier=RiskTier.ANNOUNCE
-    )
-    loop.run()
-
-    assert loop.barge_ins == 1
-    assert "Moved three files." in speaker.interrupted
-    assert any(e.kind == "barge_in" for e in events)
-
-
 def test_unknown_tool_is_handled_not_crashed():
     llm = FakeLLM(turns=[LLMTurn(tool_calls=(ToolCall("nope", {}),))])
-    loop, spy, speaker, events = build(utterances=["do a thing"], llm=llm)
+    loop, spy, said, events = build(utterances=["do a thing"], llm=llm)
     loop.run()
 
     assert spy.runs == []
-    assert speaker.said == ["I don't have a tool for that."]
+    assert said == ["I don't have a tool for that."]
     assert any(e.kind == "error" and e.payload.get("where") == "registry" for e in events)
 
 
@@ -629,19 +615,19 @@ def test_resolve_failure_asks_instead_of_running():
             raise ValueError("which folder?")
 
     bad = BadTool(spec=MOVE)
-    loop, _spy, speaker, _events = build(utterances=["move them"], tools=[bad])
+    loop, _spy, said, _events = build(utterances=["move them"], tools=[bad])
     loop.run()
 
     assert bad.runs == []
-    assert speaker.said == ["I couldn't work out what you meant by that."]
+    assert said == ["I couldn't work out what you meant by that."]
 
 
 def test_model_text_is_spoken_only_when_no_tool_spoke():
     llm = FakeLLM(turns=[LLMTurn(text="It's raining.")])
-    loop, spy, speaker, _events = build(utterances=["weather?"], llm=llm)
+    loop, spy, said, _events = build(utterances=["weather?"], llm=llm)
     loop.run()
 
-    assert speaker.said == ["It's raining."]
+    assert said == ["It's raining."]
     assert spy.runs == []
 
 
@@ -654,14 +640,14 @@ def test_a_tool_that_spoke_suppresses_the_model_chatter():
             )
         ]
     )
-    loop, _spy, speaker, _events = build(utterances=["move them"], llm=llm)
+    loop, _spy, said, _events = build(utterances=["move them"], llm=llm)
     loop.run()
 
-    assert speaker.said == ["Moved three files."]
+    assert said == ["Moved three files."]
 
 
 def test_audit_trail_covers_the_whole_path():
-    loop, _spy, _speaker, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, _spy, _said, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
 
     kinds = [e.kind for e in events]
@@ -673,7 +659,7 @@ def test_audit_sink_failure_does_not_break_the_loop():
     def exploding(event):
         raise OSError("disk full")
 
-    loop, spy, _speaker, _events = build(utterances=["move them"])
+    loop, spy, _said, _events = build(utterances=["move them"])
     loop.audit = exploding
     loop.run()
 
@@ -681,7 +667,7 @@ def test_audit_sink_failure_does_not_break_the_loop():
 
 
 def test_undo_last_goes_through_policy_too():
-    loop, spy, _speaker, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, spy, _said, _events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
     spy.runs.clear()
 
@@ -696,9 +682,9 @@ def test_undo_last_goes_through_policy_too():
 
 
 def test_undo_with_nothing_to_undo():
-    loop, _spy, speaker, _events = build()
+    loop, _spy, said, _events = build()
     loop.undo_last()
-    assert speaker.said == ["There's nothing to undo."]
+    assert said == ["There's nothing to undo."]
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +706,6 @@ def test_real_modules_wire_together():
     assert getattr(loop, "missing", None) == [], f"half-wired: {loop.missing}"
     assert loop.policy_decide is not None
     assert loop.registry is not None
-    loop.speaker = FakeSpeaker()
     loop.run()
 
 
@@ -742,7 +727,6 @@ def test_real_policy_and_confirm_gate_a_real_tool(tmp_path):
     victim.write_bytes(b"png")
 
     loop = build_loop(Settings(dry_run=True), mic=FakeMic())
-    loop.speaker = FakeSpeaker()
     loop.llm = FakeLLM(
         turns=[LLMTurn(tool_calls=(ToolCall("move_to_trash", {"paths": [str(victim)]}),))]
     )
@@ -816,14 +800,14 @@ def _undo_world(
     tool and the forger's tool of choice registered."""
     mover = SpyTool(spec=MOVE)
     clipboard = SpyTool(spec=CLIPBOARD)
-    loop, _spy, speaker, events = build(
+    loop, _spy, said, events = build(
         tier=tier,
         dry_run=dry_run,
         tools=[mover, clipboard],
         confirm=StubConfirm(verdicts=list(verdicts)),
     )
     loop.journal.entries = [entry]
-    return loop, mover, clipboard, speaker, events
+    return loop, mover, clipboard, said, events
 
 
 def _forged(tool: str = "set_clipboard", produced_by: str | None = "move_files") -> StubEntry:
@@ -835,12 +819,12 @@ def _forged(tool: str = "set_clipboard", produced_by: str | None = "move_files")
 
 def test_a_forged_journal_row_naming_a_mutating_tool_never_executes():
     """The reproduction. `set_clipboard` is nobody's inverse."""
-    loop, _mover, clipboard, speaker, events = _undo_world(entry=_forged())
+    loop, _mover, clipboard, said, events = _undo_world(entry=_forged())
 
     loop.undo_last()
 
     assert clipboard.runs == [], "a forged undo row executed a mutating tool"
-    assert speaker.said and "doesn't check out" in speaker.said[0]
+    assert said and "doesn't check out" in said[0]
     rejected = [e for e in events if e.kind == "undo_rejected"]
     assert rejected and rejected[0].payload["reason"] == "not an inverse of produced_by"
 
@@ -848,20 +832,20 @@ def test_a_forged_journal_row_naming_a_mutating_tool_never_executes():
 def test_a_journal_row_with_no_producer_is_refused():
     """A row that will not say what made it cannot be checked, and an
     uncheckable claim from a world-readable file is a hostile one."""
-    loop, mover, _clip, speaker, events = _undo_world(
+    loop, mover, _clip, said, events = _undo_world(
         entry=_forged(tool="move_files", produced_by=None)
     )
 
     loop.undo_last()
 
     assert mover.runs == [], "an unattributed journal row executed"
-    assert "doesn't check out" in speaker.said[0]
+    assert "doesn't check out" in said[0]
     reasons = [e.payload["reason"] for e in events if e.kind == "undo_rejected"]
     assert reasons == ["journal says untrusted"] or reasons == ["no produced_by"]
 
 
 def test_a_journal_row_naming_an_unknown_producer_is_refused():
-    loop, mover, _clip, _speaker, events = _undo_world(
+    loop, mover, _clip, _said, events = _undo_world(
         entry=_forged(tool="move_files", produced_by="tool_that_does_not_exist")
     )
 
@@ -879,7 +863,7 @@ def test_a_legitimate_inverse_still_runs():
         action=UndoAction(description="move them back", tool="move_files", args={"src": "b"}),
         produced_by="move_files",
     )
-    loop, mover, _clip, _speaker, _events = _undo_world(entry=entry)
+    loop, mover, _clip, _said, _events = _undo_world(entry=entry)
 
     loop.undo_last(replies=["yes"])
 
@@ -893,7 +877,7 @@ def test_undo_is_never_executed_below_confirm_voice():
         produced_by="move_files",
     )
     # SILENT: the stub policy would happily run this without saying a word.
-    loop, mover, _clip, _speaker, events = _undo_world(
+    loop, mover, _clip, _said, events = _undo_world(
         entry=entry, tier=RiskTier.SILENT, verdicts=["no"]
     )
 
@@ -911,7 +895,7 @@ def test_undo_never_lowers_a_tier_policy_raised():
         action=UndoAction(description="move them back", tool="move_files", args={}),
         produced_by="move_files",
     )
-    loop, mover, _clip, _speaker, _events = _undo_world(
+    loop, mover, _clip, _said, _events = _undo_world(
         entry=entry, tier=RiskTier.REFUSE, verdicts=["yes"]
     )
 
@@ -932,14 +916,14 @@ def test_a_dry_run_undo_keeps_the_journal_entry():
         action=UndoAction(description="move them back", tool="move_files", args={}),
         produced_by="move_files",
     )
-    loop, mover, _clip, speaker, _events = _undo_world(entry=entry, dry_run=True)
+    loop, mover, _clip, said, _events = _undo_world(entry=entry, dry_run=True)
 
     loop.undo_last(replies=["yes"])
 
     assert mover.runs == []
     assert loop.journal.committed == [], "a dry run spent the undo record"
     assert loop.journal.peek() is entry, "the undo record is gone"
-    assert any(line.startswith("Dry run:") for line in speaker.said)
+    assert any(line.startswith("Dry run:") for line in said)
 
 
 def test_a_refused_undo_keeps_the_journal_entry():
@@ -947,7 +931,7 @@ def test_a_refused_undo_keeps_the_journal_entry():
         action=UndoAction(description="move them back", tool="move_files", args={}),
         produced_by="move_files",
     )
-    loop, mover, _clip, _speaker, events = _undo_world(entry=entry, verdicts=["no"])
+    loop, mover, _clip, _said, events = _undo_world(entry=entry, verdicts=["no"])
 
     loop.undo_last(replies=["no"])
 
@@ -959,7 +943,7 @@ def test_a_refused_undo_keeps_the_journal_entry():
 
 def test_an_unverifiable_undo_keeps_the_journal_entry():
     entry = _forged()
-    loop, _mover, _clip, _speaker, _events = _undo_world(entry=entry)
+    loop, _mover, _clip, _said, _events = _undo_world(entry=entry)
 
     loop.undo_last()
 
@@ -973,7 +957,7 @@ def test_a_failed_undo_keeps_the_journal_entry():
         produced_by="move_files",
     )
     mover = SpyTool(spec=MOVE, ok=False)
-    loop, _spy, _speaker, _events = build(tools=[mover], confirm=StubConfirm(verdicts=["yes"]))
+    loop, _spy, _said, _events = build(tools=[mover], confirm=StubConfirm(verdicts=["yes"]))
     loop.journal.entries = [entry]
 
     loop.undo_last(replies=["yes"])
@@ -988,7 +972,7 @@ def test_the_undo_path_never_calls_pop():
         action=UndoAction(description="move them back", tool="move_files", args={}),
         produced_by="move_files",
     )
-    loop, _mover, _clip, _speaker, _events = _undo_world(entry=entry, dry_run=True)
+    loop, _mover, _clip, _said, _events = _undo_world(entry=entry, dry_run=True)
 
     loop.undo_last(replies=["yes"])
 
@@ -1009,14 +993,14 @@ def test_a_hallucinated_tool_name_does_not_end_the_session():
             LLMTurn(tool_calls=(ToolCall("move_files", {"src": "a", "dest": "b"}),)),
         ]
     )
-    loop, spy, speaker, events = build(
+    loop, spy, said, events = build(
         utterances=["do the impossible", "now move them"], llm=llm, tier=RiskTier.ANNOUNCE
     )
 
     outcomes = loop.run()
 
     assert len(outcomes) == 2, "the loop died on the first utterance"
-    assert speaker.said[0] == "I don't have a tool for that."
+    assert said[0] == "I don't have a tool for that."
     assert len(spy.runs) == 1, "the session did not survive to the next utterance"
     assert any(e.kind == "error" and e.payload.get("where") == "registry" for e in events)
 
@@ -1029,7 +1013,7 @@ def test_a_tool_the_router_did_not_activate_is_escalated_not_waved_through():
     an inert assistant. Instead the miss is logged and the tier is raised.
     """
     llm = FakeLLM(turns=[LLMTurn(tool_calls=(ToolCall("move_files", {"src": "a"}),))])
-    loop, spy, _speaker, events = build(
+    loop, spy, _said, events = build(
         utterances=["what's the weather"],
         llm=llm,
         tier=RiskTier.SILENT,
@@ -1047,7 +1031,7 @@ def test_a_tool_the_router_did_not_activate_is_escalated_not_waved_through():
 
 def test_an_un_routed_tool_still_runs_once_the_user_says_yes():
     llm = FakeLLM(turns=[LLMTurn(tool_calls=(ToolCall("move_files", {"src": "a"}),))])
-    loop, spy, _speaker, _events = build(
+    loop, spy, _said, _events = build(
         utterances=["what's the weather", "yes"],
         llm=llm,
         tier=RiskTier.SILENT,
@@ -1100,7 +1084,7 @@ TRASH = ToolSpec(
 def test_the_confirmation_reads_back_a_verb_not_a_noun_phrase():
     """"report.pdf - should I go ahead?" reads identically for showing a file
     and for shredding it. The question has to carry the verb."""
-    loop, _spy, speaker, _events = build(
+    loop, _spy, said, _events = build(
         utterances=["bin that", "yes"],
         tier=RiskTier.CONFIRM_VOICE,
         tools=[VerbTool(spec=TRASH)],
@@ -1108,7 +1092,7 @@ def test_the_confirmation_reads_back_a_verb_not_a_noun_phrase():
     )
     loop.run()
 
-    assert speaker.said[0] == (
+    assert said[0] == (
         "Should I move to the Trash report.pdf, replacing one file that's already there?"
     )
 
@@ -1117,32 +1101,32 @@ def test_a_verbless_action_is_still_a_grammatical_question():
     """Without a verb, describe() falls back to the TOOL NAME, which is a noun.
     "Should I move files a, b?" is luck; "I would screenshots from today" is
     what that luck looks like when it runs out."""
-    loop, _spy, speaker, _events = build(
+    loop, _spy, said, _events = build(
         utterances=["move them", "yes"],
         tier=RiskTier.CONFIRM_VOICE,
         confirm=StubConfirm(verdicts=["yes"]),
     )
     loop.run()
 
-    assert speaker.said[0] == "Should I use the move files tool on a, b?"
+    assert said[0] == "Should I use the move files tool on a, b?"
 
 
 def test_the_dry_run_line_is_a_sentence():
-    loop, _spy, speaker, _events = build(
+    loop, _spy, said, _events = build(
         utterances=["bin that"], dry_run=True, tools=[VerbTool(spec=TRASH)]
     )
     loop.run()
 
-    assert speaker.said == [
+    assert said == [
         "Dry run: I would move to the Trash report.pdf, replacing one file that's already there."
     ]
 
 
 def test_the_dry_run_line_is_a_sentence_without_a_verb_too():
-    loop, _spy, speaker, _events = build(utterances=["move them"], dry_run=True)
+    loop, _spy, said, _events = build(utterances=["move them"], dry_run=True)
     loop.run()
 
-    assert speaker.said == ["Dry run: I would use the move files tool on a, b."]
+    assert said == ["Dry run: I would use the move files tool on a, b."]
 
 
 def test_the_model_does_not_agree_to_what_we_just_refused():
@@ -1155,7 +1139,7 @@ def test_the_model_does_not_agree_to_what_we_just_refused():
             )
         ]
     )
-    loop, spy, speaker, _events = build(
+    loop, spy, said, _events = build(
         utterances=["bin that", "no don't"],
         tier=RiskTier.CONFIRM_VOICE,
         llm=llm,
@@ -1164,29 +1148,29 @@ def test_the_model_does_not_agree_to_what_we_just_refused():
     loop.run()
 
     assert spy.runs == []
-    assert speaker.said[-1] == "Okay, leaving it."
-    assert "Sure, binning it now." not in speaker.said
+    assert said[-1] == "Okay, leaving it."
+    assert "Sure, binning it now." not in said
 
 
 def test_the_model_does_not_talk_over_a_refusal_either():
     llm = FakeLLM(
         turns=[LLMTurn(text="Done!", tool_calls=(ToolCall("move_files", {"src": "a"}),))]
     )
-    loop, spy, speaker, _events = build(
+    loop, spy, said, _events = build(
         utterances=["rm -rf /"], tier=RiskTier.REFUSE, llm=llm
     )
     loop.run()
 
     assert spy.runs == []
-    assert "Done!" not in speaker.said
+    assert "Done!" not in said
 
 
 def test_the_model_does_not_talk_over_an_unknown_tool():
     llm = FakeLLM(turns=[LLMTurn(text="On it!", tool_calls=(ToolCall("nope", {}),))])
-    loop, _spy, speaker, _events = build(utterances=["do a thing"], llm=llm)
+    loop, _spy, said, _events = build(utterances=["do a thing"], llm=llm)
     loop.run()
 
-    assert speaker.said == ["I don't have a tool for that."]
+    assert said == ["I don't have a tool for that."]
 
 
 # ---------------------------------------------------------------------------
@@ -1207,7 +1191,7 @@ def _all_payloads(events: Sequence[AuditEvent]) -> str:
 def test_unaddressed_speech_is_not_written_down_at_all():
     """`_emit("heard", text=...)` fired BEFORE the gate. In always-on mode that
     is a record of every sentence spoken in the room."""
-    loop, _spy, _speaker, events = build(
+    loop, _spy, _said, events = build(
         utterances=[f"my card is {CARD}"],
         gate=StubGate(default=StubWake(wake=False)),
         llm=FakeLLM(),
@@ -1225,7 +1209,7 @@ def test_unaddressed_speech_is_not_written_down_at_all():
 def test_a_confirmation_reply_is_never_written_down():
     """The reply is raw speech: usually "yeah", sometimes the rest of whatever
     the user happened to be saying."""
-    loop, _spy, _speaker, events = build(
+    loop, _spy, _said, events = build(
         utterances=["move them", f"yes and my card is {CARD}"],
         tier=RiskTier.CONFIRM_VOICE,
         confirm=StubConfirm(verdicts=["yes"]),
@@ -1242,7 +1226,7 @@ def test_a_rescore_logs_neither_transcript():
     """The rescore is the one place the loop holds two transcripts of the same
     sentence at once, and it used to write both of them down verbatim."""
     cloud = FakeTranscriber(source="cloud", rescore={"my card is one two": f"my card is {CARD}"})
-    loop, _spy, _speaker, events = build(
+    loop, _spy, _said, events = build(
         utterances=["my card is one two"], cloud=cloud, llm=FakeLLM()
     )
     loop.run()
@@ -1264,7 +1248,7 @@ def test_a_rescore_logs_neither_transcript():
 def test_the_assessment_that_authorized_the_action_is_logged():
     """The loop used to hand-roll every payload, and the RiskAssessment that
     authorized the action was never written down at all."""
-    loop, _spy, _speaker, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, _spy, _said, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
 
     judgments = [e for e in events if e.kind == "judgment"]
@@ -1277,7 +1261,7 @@ def test_a_fully_synthetic_session_is_greppable_as_synthetic():
     """An eval sweep writes the same event kinds as a live session. Six months
     later `grep '"synthetic":true'` is the only thing that can tell them apart."""
     audit = pytest.importorskip("daa.safety.audit")
-    loop, _spy, _speaker, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
+    loop, _spy, _said, events = build(utterances=["move them"], tier=RiskTier.ANNOUNCE)
     loop.run()
 
     records = [audit.record(e) for e in events]
@@ -1288,7 +1272,7 @@ def test_a_fully_synthetic_session_is_greppable_as_synthetic():
 
 def test_every_stage_of_the_path_uses_the_shared_builders():
     audit = pytest.importorskip("daa.safety.audit")
-    loop, _spy, _speaker, events = build(
+    loop, _spy, _said, events = build(
         utterances=["move them", "yes"],
         tier=RiskTier.CONFIRM_VOICE,
         confirm=StubConfirm(verdicts=["yes"]),
@@ -1312,7 +1296,7 @@ def test_the_undo_attempt_is_logged_with_its_provenance():
         action=UndoAction(description="move them back", tool="move_files", args={}),
         produced_by="move_files",
     )
-    loop, _mover, _clip, _speaker, events = _undo_world(entry=entry, dry_run=True)
+    loop, _mover, _clip, _said, events = _undo_world(entry=entry, dry_run=True)
 
     loop.undo_last(replies=["yes"])
 
@@ -1380,7 +1364,7 @@ def _visual_world(console: FakeConsole, *, verdicts: Sequence[str] = ("yes",)):
     llm = FakeLLM(
         turns=[LLMTurn(tool_calls=(ToolCall("run_applescript", {"script": SCRIPT_BODY}),))]
     )
-    loop, _spy, speaker, events = build(
+    loop, _spy, said, events = build(
         utterances=["do the thing", "yes", "yes"],
         tier=RiskTier.CONFIRM_VISUAL,
         tools=[tool],
@@ -1388,14 +1372,14 @@ def _visual_world(console: FakeConsole, *, verdicts: Sequence[str] = ("yes",)):
         confirm=StubConfirm(verdicts=list(verdicts)),
     )
     loop.console = console
-    return loop, tool, speaker, events
+    return loop, tool, said, events
 
 
 def test_the_visual_tier_is_reachable_by_typing_yes():
     """Before the fix this tier was a permanent silent refusal: _dispatch spoke
     one sentence and returned, so nothing at CONFIRM_VISUAL could ever run."""
     console = FakeConsole(typed="yes\n")
-    loop, tool, _speaker, events = _visual_world(console)
+    loop, tool, _said, events = _visual_world(console)
 
     loop.run()
 
@@ -1406,7 +1390,7 @@ def test_the_visual_tier_is_reachable_by_typing_yes():
 def test_the_visual_approval_shows_the_whole_script():
     """The point of the tier is that the human SEES what will run."""
     console = FakeConsole(typed="yes\n")
-    loop, _tool, _speaker, _events = _visual_world(console)
+    loop, _tool, _said, _events = _visual_world(console)
 
     loop.run()
 
@@ -1420,7 +1404,7 @@ def test_the_visual_approval_shows_the_whole_script():
 
 def test_the_visual_approval_is_typed_and_never_spoken():
     console = FakeConsole(typed="yes\n")
-    loop, _tool, _speaker, _events = _visual_world(console, verdicts=["yes", "yes"])
+    loop, _tool, _said, _events = _visual_world(console, verdicts=["yes", "yes"])
 
     loop.run()
 
@@ -1429,18 +1413,18 @@ def test_the_visual_approval_is_typed_and_never_spoken():
 
 def test_anything_other_than_yes_cancels_the_visual_tier():
     console = FakeConsole(typed="y\n")  # not "yes". The friction is the feature.
-    loop, tool, speaker, events = _visual_world(console)
+    loop, tool, said, events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == []
-    assert "Okay, leaving it." in speaker.said
+    assert "Okay, leaving it." in said
     assert any(e.kind == "abandoned" for e in events)
 
 
 def test_an_empty_answer_cancels_the_visual_tier():
     console = FakeConsole(typed="")  # EOF, e.g. a closed pipe
-    loop, tool, _speaker, _events = _visual_world(console)
+    loop, tool, _said, _events = _visual_world(console)
 
     loop.run()
 
@@ -1449,13 +1433,13 @@ def test_an_empty_answer_cancels_the_visual_tier():
 
 def test_with_no_terminal_the_visual_tier_refuses_and_says_why():
     console = FakeConsole(is_available=False)
-    loop, tool, speaker, events = _visual_world(console)
+    loop, tool, said, events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == []
     assert console.prompts == [], "we asked a console that isn't there"
-    assert "screen" in speaker.said[0]
+    assert "screen" in said[0]
     assert any(e.kind == "deferred_visual" for e in events)
 
 
@@ -1470,7 +1454,7 @@ def test_a_console_that_explodes_is_a_refusal():
         def ask(self, prompt):
             return "yes"
 
-    loop, tool, _speaker, _events = _visual_world(FakeConsole())
+    loop, tool, _said, _events = _visual_world(FakeConsole())
     loop.console = Exploding()
 
     loop.run()
@@ -1480,7 +1464,7 @@ def test_a_console_that_explodes_is_a_refusal():
 
 def test_a_spoken_yes_cannot_forge_the_visual_token():
     """_execute's assertion is the enforcement point, not the dispatch order."""
-    loop, _spy, _speaker, _events = build()
+    loop, _spy, _said, _events = build()
     spy = SpyTool(spec=MOVE)
     action = spy.resolve(src="a", dest="b")
     with pytest.raises(AssertionError):
@@ -1556,7 +1540,7 @@ def test_a_present_console_approves_and_still_carries_the_visual_token():
     from daa.voice.loop import _VISUAL_OK
 
     console = PresentConsole(answer=True)
-    loop, tool, _speaker, events = _visual_world(console)
+    loop, tool, _said, events = _visual_world(console)
     captured = _watch_execute(loop)
 
     loop.run()
@@ -1572,12 +1556,12 @@ def test_a_present_console_approves_and_still_carries_the_visual_token():
 
 def test_a_present_console_that_says_false_refuses_and_says_so():
     console = PresentConsole(answer=False)
-    loop, tool, speaker, events = _visual_world(console)
+    loop, tool, said, events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == []
-    assert "Okay, leaving it." in speaker.said
+    assert "Okay, leaving it." in said
     assert any(e.kind == "abandoned" for e in events)
     assert any(e.kind == "visual_confirm" and not e.payload["granted"] for e in events)
 
@@ -1595,22 +1579,22 @@ def test_only_the_literal_True_approves(answer: Any):
     that silently approves a real action is the worst failure available here.
     """
     console = PresentConsole(answer=answer)
-    loop, tool, speaker, _events = _visual_world(console)
+    loop, tool, said, _events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == [], f"present() returning {answer!r} approved an action"
-    assert "Okay, leaving it." in speaker.said
+    assert "Okay, leaving it." in said
 
 
 def test_a_present_that_raises_is_a_refusal_and_is_logged():
     console = PresentConsole(raises=OSError("the dock died"))
-    loop, tool, speaker, events = _visual_world(console)
+    loop, tool, said, events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == []
-    assert "Okay, leaving it." in speaker.said
+    assert "Okay, leaving it." in said
     errors = [e for e in events if e.kind == "error" and e.payload.get("where") == "console"]
     assert len(errors) == 1
     assert "the dock died" in errors[0].payload["error"]
@@ -1620,7 +1604,7 @@ def test_a_present_console_is_never_asked_to_write_or_ask():
     """The two branches are exclusive. A console that got both would be a
     console whose behaviour depended on the order of two getattrs."""
     console = PresentConsole(answer=True)
-    loop, _tool, _speaker, _events = _visual_world(console)
+    loop, _tool, _said, _events = _visual_world(console)
 
     loop.run()
 
@@ -1631,13 +1615,13 @@ def test_a_present_console_is_never_asked_to_write_or_ask():
 
 def test_a_present_console_with_no_screen_still_refuses_before_presenting():
     console = PresentConsole(answer=True, is_available=False)
-    loop, tool, speaker, events = _visual_world(console)
+    loop, tool, said, events = _visual_world(console)
 
     loop.run()
 
     assert tool.runs == []
     assert console.seen == [], "a card was raised on a console that said it wasn't there"
-    assert "screen" in speaker.said[0]
+    assert "screen" in said[0]
     assert any(e.kind == "deferred_visual" for e in events)
 
 

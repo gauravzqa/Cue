@@ -332,15 +332,21 @@ class BridgeMic:
         self._queue.put(_Work(fn, name))
 
     def onset(self) -> None:
-        """`mic.onset`. Cheap and non-blocking by contract: in practice it is
-        exactly `speaker.stop`, and it is what keeps barge-in working."""
+        """`mic.onset`. Cheap and non-blocking by contract.
+
+        daa has no audio out, so nothing needs cutting off when the user
+        starts talking and no listener is registered today. The hook stays
+        because the contract with the dock does -- onset is still the earliest
+        signal that a turn is starting -- and because whatever gets wired here
+        next must be as cheap as the thing it replaced.
+        """
         listener = self._listener
         if listener is None:
             return
         try:
             listener()
         except Exception as exc:  # noqa: BLE001 -- isolation boundary
-            log(f"barge-in listener raised: {exc}")
+            log(f"onset listener raised: {exc}")
 
     def drop_pending(self) -> int:
         """Esc. Discard queued audio; keep any deferred work."""
@@ -733,10 +739,12 @@ class Bridge:
         self.emit(Method.AUDIT, payload, kind=kind)
         # A couple of kinds are also a state change the dock should show.
         if kind == "spoke":
+            # The dock's only copy of what daa just said. There is no audio
+            # behind this frame and there is no second channel; drop it and
+            # the sentence never reaches the person it was written for.
             text = str((event.payload or {}).get("text") or "")
             if text:
                 self.emit(Method.SPEAK, {"text": scrub(text)})
-                self.state("speaking", scrub(text))
         elif kind == "woke":
             self.state("thinking", "working out what to do")
 
@@ -845,7 +853,6 @@ class Bridge:
         """The dock's whole boot state in one frame, sent straight after the
         `session.hello` response."""
         settings = self.loop.settings
-        speaker = getattr(self.loop, "speaker", None)
         tools = []
         registry = getattr(self.loop, "registry", None)
         if registry is not None:
@@ -871,7 +878,6 @@ class Bridge:
                     # the VAD and the recogniser; Python opens no audio device.
                     "mic": "bridge",
                     "stt": "bridge",
-                    "tts": "live" if getattr(speaker, "name", "fake") != "fake" else "fake",
                     "llm": "live" if getattr(settings, "deepseek_api_key", None) else "fake",
                     "jev": "live" if getattr(settings, "jev_live", False) else "fake",
                 },
@@ -883,7 +889,6 @@ class Bridge:
 
     def doctor(self) -> dict[str, Any]:
         settings = self.loop.settings
-        speaker = getattr(self.loop, "speaker", None)
         return {
             "daa": self.version,
             "dryRun": bool(getattr(settings, "dry_run", True)),
@@ -892,7 +897,6 @@ class Bridge:
             "providers": {
                 "mic": "bridge",
                 "stt": "bridge",
-                "tts": str(getattr(speaker, "name", "fake")),
                 "llm": "live" if getattr(settings, "deepseek_api_key", None) else "fake",
                 "jev": "live" if getattr(settings, "jev_live", False) else "fake",
             },
@@ -953,16 +957,10 @@ class Bridge:
 
         Nothing here interrupts work already in flight -- an execution that
         has started is not something a keystroke gets to half-finish. What it
-        does is stop the speaking, drop audio that has not been looked at yet,
-        and forget the half sentence the gate was holding, so the abandoned
-        fragment does not join the next thing the user says.
+        does is drop audio that has not been looked at yet and forget the half
+        sentence the gate was holding, so the abandoned fragment does not join
+        the next thing the user says.
         """
-        speaker = getattr(self.loop, "speaker", None)
-        if speaker is not None:
-            try:
-                speaker.stop()
-            except Exception as exc:  # noqa: BLE001 -- isolation boundary
-                log(f"could not stop the speaker: {exc}")
         dropped = self.mic.drop_pending()
         try:
             self.loop._pending = ""
@@ -1022,12 +1020,6 @@ class Bridge:
         thread = self._turn_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
-        speaker = getattr(self.loop, "speaker", None)
-        if speaker is not None:
-            try:
-                speaker.stop()
-            except Exception:  # noqa: BLE001, S110 -- we are on the way out
-                pass
         self.writer.close()
         log("down")
 

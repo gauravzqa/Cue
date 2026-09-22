@@ -29,8 +29,13 @@ mic ─► VAD ─► local STT ─► Jev address gate ─┬─ not addressed 
         SILENT: run  │  ANNOUNCE: run + say  │  CONFIRM_VOICE: read back, wait for yes
                      │  CONFIRM_VISUAL: print everything, require a TYPED yes
                                              ▼
-                          run ─► UndoJournal.record ─► TTS
+                          run ─► UndoJournal.record ─► the reply, as text
 ```
+
+daa listens but does not talk back. Every line it produces — readbacks,
+refusals, results, notices — is written: `daa> …` in the CLI, and a `speak`
+frame the dock renders in its transcript. There is no audio out and no TTS
+provider to configure.
 
 ### Why Jev and not just an LLM
 
@@ -135,7 +140,7 @@ config.py      frozen Settings; all Jev thresholds are named fields
 jev/           judgment. Imports nothing from daa except contracts/config.
 tools/         macOS actions. Never imports jev/ or voice/.
 safety/        policy, undo journal, audit. Pure; imports no sibling.
-voice/         mic, STT, TTS, the loop. The ONLY module that may import all three.
+voice/         mic, STT, the loop. The ONLY module that may import all three.
 evals/         labelled address-gate dataset + scoring harness
 ```
 

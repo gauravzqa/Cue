@@ -12,7 +12,7 @@ Four subcommands, in order of how often you will actually type them:
     daa listen         the real loop.
     daa undo           reverse the last recorded mutation. The journal is a
                        file on disk, so the row is validated against the
-                       registry and confirmed out loud before it runs -- see
+                       registry and confirmed with the user before it runs -- see
                        VoiceLoop.undo_last.
 
 Nothing here does any work itself. The CLI's job is to construct a VoiceLoop
@@ -36,8 +36,6 @@ _KEYS = (
     ("TYPESAFE_API_KEY", "Jev judgments"),
     ("DEEPSEEK_API_KEY", "conversational model"),
     ("ASSEMBLYAI_API_KEY", "cloud STT rescore"),
-    ("INWORLD_API_KEY", "TTS"),
-    ("OPENAI_API_KEY", "TTS fallback"),
 )
 
 
@@ -110,15 +108,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from daa.voice import loop as loop_mod
     from daa.voice import mic as mic_mod
     from daa.voice import stt as stt_mod
-    from daa.voice import tts as tts_mod
 
     write(f"  mic                {_mark(mic_mod.SoundDeviceMic.available())} "
           f"({'sounddevice' if mic_mod.SoundDeviceMic.available() else 'FakeMic'})\n")
     write(f"  stt.local          {_mark(stt_mod.LocalTranscriber.available())} "
           f"({stt_mod.LocalTranscriber.describe()})\n")
     write(f"  stt.cloud          {_mark(stt_mod.build_cloud(settings) is not None)}\n")
-    speaker = tts_mod.build_speaker(settings)
-    write(f"  tts                {_mark(speaker.name != 'fake')} ({speaker.name})\n")
     write(f"  llm                {_mark(bool(settings.deepseek_api_key))} ({settings.voice_model})\n")
     write(f"  jev                {_mark(settings.jev_live)}\n")
 
@@ -155,16 +150,10 @@ def _null_mic() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _build(settings: Settings, *, mic: Any = None, silent: bool = False) -> Any:
+def _build(settings: Settings, *, mic: Any = None) -> Any:
     from daa.voice.loop import build_loop
-    from daa.voice.tts import FakeSpeaker
 
-    loop = build_loop(settings, mic=mic)
-    if silent:
-        # --silent swaps the speaker rather than skipping TTS, so the code path
-        # under test is still the code path that ships.
-        loop.speaker = FakeSpeaker()
-    return loop
+    return build_loop(settings, mic=mic)
 
 
 def _print_outcome(outcome: Any) -> None:
@@ -177,7 +166,7 @@ def _print_outcome(outcome: Any) -> None:
 
 def cmd_say(args: argparse.Namespace) -> int:
     settings = Settings.load()
-    loop = _build(settings, silent=args.silent)
+    loop = _build(settings)
     outcome = loop.handle_text(" ".join(args.text), gated=args.gate, replies=args.reply or ())
     _print_outcome(outcome)
     # Always 0: a dropped or refused utterance is the system working, not a
@@ -189,7 +178,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
     settings = Settings.load()
     from daa.voice.mic import build_mic
 
-    loop = _build(settings, mic=build_mic(settings), silent=args.silent)
+    loop = _build(settings, mic=build_mic(settings))
     if loop.policy_decide is None:
         print("safety policy not wired; run `daa doctor`. Refusing to listen.", file=sys.stderr)
         return 2
@@ -210,14 +199,12 @@ def cmd_listen(args: argparse.Namespace) -> int:
     finally:
         if loop.mic is not None:
             loop.mic.close()
-        if loop.speaker is not None:
-            loop.speaker.stop()
     return status
 
 
 def cmd_undo(args: argparse.Namespace) -> int:
     settings = Settings.load()
-    loop = _build(settings, silent=args.silent)
+    loop = _build(settings)
     if args.list:
         if loop.journal is None:
             print("no undo journal wired.", file=sys.stderr)
@@ -269,7 +256,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     listen = sub.add_parser("listen", help="run the real voice loop")
-    listen.add_argument("--silent", action="store_true", help="don't actually play audio")
     listen.add_argument("--max-segments", type=int, default=None, help="stop after N segments")
     listen.set_defaults(func=cmd_listen)
 
@@ -277,7 +263,6 @@ def build_parser() -> argparse.ArgumentParser:
     say.add_argument("text", nargs="+")
     say.add_argument("--gate", action="store_true", help="run the address gate on typed text too")
     say.add_argument("--reply", action="append", help="scripted answer to a confirmation prompt")
-    say.add_argument("--silent", action="store_true", help="don't actually play audio")
     say.set_defaults(func=cmd_say)
 
     doctor = sub.add_parser("doctor", help="what is wired, what is live, what is fake")
@@ -293,7 +278,6 @@ def build_parser() -> argparse.ArgumentParser:
     undo.add_argument("--list", action="store_true", help="show the journal instead of undoing")
     undo.add_argument("--yes", action="store_true",
                       help="pre-answer the spoken confirmation undo always asks for")
-    undo.add_argument("--silent", action="store_true", help="don't actually play audio")
     undo.set_defaults(func=cmd_undo)
 
     return parser

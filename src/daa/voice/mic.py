@@ -18,8 +18,11 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 # Fired when the VAD sees speech BEGIN, not when the segment completes.
-# Barge-in has to cut TTS on the first syllable; waiting for end-of-segment
-# means the assistant talks over the user for a full utterance.
+# Nothing subscribes today -- daa has no audio out, so there is nothing to cut
+# off when the user starts talking. The hook stays because ONSET and SEGMENT
+# are genuinely different moments, and anything that needs the earlier one
+# (a listening indicator, a future interruption) needs it on the first
+# syllable rather than a whole utterance later.
 SpeechListener = Callable[[], None]
 
 
@@ -63,9 +66,9 @@ class AudioSource(Protocol):
         ...
 
     def set_speech_listener(self, listener: SpeechListener | None) -> None:
-        """Register the barge-in hook. Called on speech ONSET, from whatever
-        thread the audio callback runs on, so the listener must be cheap and
-        non-blocking -- in practice it is exactly `speaker.stop`."""
+        """Register the speech-onset hook. Called on speech ONSET, from
+        whatever thread the audio callback runs on, so the listener must be
+        cheap and non-blocking."""
         ...
 
     def close(self) -> None:
@@ -100,8 +103,8 @@ class FakeMic:
         index = 0
         while index < len(self.utterances) and not self._closed:
             text = self.utterances[index]
-            # Fire onset BEFORE yielding: the loop's barge-in handler must have
-            # already killed any in-flight TTS by the time it sees the segment.
+            # Fire onset BEFORE yielding: a listener must see the onset by
+            # the time anything downstream sees the segment.
             if self._listener is not None:
                 self._listener()
             self.emitted.append(text)
@@ -236,8 +239,8 @@ class EnergyVAD:
             if loud:
                 if not buffer:
                     started_at = self._clock()
-                    # Fire on the FIRST loud block: barge-in must cut TTS on
-                    # the first syllable, not after the click filter decides.
+                    # Fire on the FIRST loud block: onset means the first
+                    # syllable, not whatever the click filter decides later.
                     if on_onset is not None:
                         on_onset()
                     buffer.extend(pre_roll)

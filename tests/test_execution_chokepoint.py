@@ -121,6 +121,6 @@ def test_no_module_shells_out_without_going_through_base(path: pathlib.Path):
     src = path.read_text()
     if "subprocess" not in src:
         return
-    assert rel in {"tools/base.py", "voice/tts.py"}, (
+    assert rel == "tools/base.py", (
         f"{rel} imports subprocess; spawning belongs in tools/base.py::run_argv"
     )

@@ -1,9 +1,9 @@
-"""Mic, STT and TTS boundaries. No hardware, no network, no keys.
+"""Mic and STT boundaries. No hardware, no network, no keys.
 
 The recurring assertion in this file is that the OPTIONAL half of each module
-stays optional: importing daa.voice must not import sounddevice, httpx or
-openai, and a missing backend must raise STTUnavailable (which the loop
-handles) rather than something the loop would crash on.
+stays optional: importing daa.voice must not import sounddevice or openai,
+and a missing backend must raise STTUnavailable (which the loop handles)
+rather than something the loop would crash on.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from daa.voice.stt import (
     build_cloud,
     build_local,
 )
-from daa.voice.tts import FakeSpeaker, FallbackSpeaker, SaySpeaker, Speaker
 
 # ---------------------------------------------------------------------------
 # mic
@@ -170,75 +169,6 @@ def test_build_cloud_returns_a_client_with_a_key(monkeypatch: pytest.MonkeyPatch
     cloud = build_cloud(Settings())
     assert isinstance(cloud, AssemblyAITranscriber)
     assert cloud.available()
-
-
-# ---------------------------------------------------------------------------
-# tts
-# ---------------------------------------------------------------------------
-
-
-def test_fake_speaker_satisfies_the_protocol():
-    assert isinstance(FakeSpeaker(), Speaker)
-
-
-def test_fake_speaker_keeps_speaking_until_stopped():
-    speaker = FakeSpeaker()
-    speaker.say("moving forty-seven screenshots")
-    assert speaker.is_speaking()
-    speaker.stop()
-    assert not speaker.is_speaking()
-    assert speaker.interrupted == ["moving forty-seven screenshots"]
-    assert speaker.stops == 1
-
-
-def test_stop_is_idempotent_when_silent():
-    speaker = FakeSpeaker()
-    speaker.stop()
-    speaker.stop()
-    assert speaker.interrupted == []
-
-
-def test_a_new_utterance_interrupts_the_previous_one():
-    speaker = FakeSpeaker()
-    speaker.say("one")
-    speaker.say("two")
-    assert speaker.interrupted == ["one"]
-    assert speaker.last == "two"
-
-
-def test_fallback_speaker_moves_on_when_a_provider_raises():
-    class Broken:
-        name = "broken"
-
-        def say(self, text):
-            raise RuntimeError("402")
-
-        def stop(self):
-            pass
-
-        def is_speaking(self):
-            return False
-
-    good = FakeSpeaker()
-    chain = FallbackSpeaker([Broken(), good])
-    chain.say("hello")
-    assert good.said == ["hello"]
-    assert chain.active is good
-    assert chain.failures and "broken" in chain.failures[0]
-
-
-def test_fallback_speaker_stops_every_provider():
-    a, b = FakeSpeaker(), FakeSpeaker()
-    chain = FallbackSpeaker([a, b])
-    a.say("x")
-    b.say("y")
-    chain.stop()
-    assert not chain.is_speaking()
-
-
-def test_say_speaker_reports_availability_without_running_it():
-    # No subprocess is spawned by a mere availability check.
-    assert isinstance(SaySpeaker.available(), bool)
 
 
 def test_no_network_client_is_imported_by_the_voice_package():

@@ -1,9 +1,8 @@
-"""Audio in, text out; text in, audio out.
+"""Audio in, text out. Nothing goes back out as audio.
 
 Re-exports only the Protocols, their fakes and the loop. Deliberately does NOT
-import the real providers (sounddevice, AssemblyAI, Inworld, openai) -- every
-one of those is optional, and `import daa.voice` must work on a machine with
-none of them installed.
+import the real providers (sounddevice, AssemblyAI) -- both are optional, and
+`import daa.voice` must work on a machine with neither installed.
 """
 
 from __future__ import annotations
@@ -13,18 +12,15 @@ from daa.voice.loop import TurnOutcome, VoiceLoop, build_loop
 from daa.voice.mic import AudioChunk, AudioSource, FakeMic
 from daa.voice.stt import FakeTranscriber, STTUnavailable, Transcriber, Transcription
 from daa.voice.transcript import Transcript, Turn
-from daa.voice.tts import FakeSpeaker, Speaker
 
 __all__ = [
     "AudioChunk",
     "AudioSource",
     "FakeLLM",
     "FakeMic",
-    "FakeSpeaker",
     "FakeTranscriber",
     "LLMTurn",
     "STTUnavailable",
-    "Speaker",
     "ToolCall",
     "Transcriber",
     "Transcript",

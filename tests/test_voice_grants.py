@@ -35,7 +35,6 @@ from daa.voice.llm import FakeLLM, LLMTurn, ToolCall
 from daa.voice.loop import TurnOutcome, VoiceLoop
 from daa.voice.mic import FakeMic
 from daa.voice.stt import FakeTranscriber
-from daa.voice.tts import FakeSpeaker
 from test_voice_loop import (
     MOVE,
     SpyTool,
@@ -122,7 +121,7 @@ def build(
     tmp_path: Any = None,
     tools: list[Any] | None = None,
     dry_run: bool = False,
-) -> tuple[VoiceLoop, SpyTool, FakeSpeaker, list[Any]]:
+) -> tuple[VoiceLoop, SpyTool, list[str], list[Any]]:
     clock = clock or Clock()
     spy = SpyTool(
         spec=MOVE,
@@ -133,12 +132,10 @@ def build(
     for extra in tools or []:
         registry.tools[extra.spec.name] = extra
     events: list[Any] = []
-    speaker = FakeSpeaker()
     loop = VoiceLoop(
         settings=Settings(dry_run=dry_run),
         mic=FakeMic(utterances=[]),
         local_stt=FakeTranscriber(source="local"),
-        speaker=speaker,
         gate=StubGate(),
         router=StubRouter(),
         risk=StubRisk(),
@@ -153,7 +150,7 @@ def build(
         jobs=JobRegistry(tmp_path / "jobs.jsonl", now=clock) if tmp_path else None,
         notices=NoticeBoard(now=clock),
     )
-    return loop, spy, speaker, events
+    return loop, spy, loop.said, events
 
 
 def _grant(loop: VoiceLoop, **over: Any):
@@ -178,10 +175,10 @@ def _kinds(events: list[Any], kind: str) -> list[Any]:
 
 
 def test_a_grant_is_read_back_before_it_is_given():
-    loop, _spy, speaker, events = build()
+    loop, _spy, said, events = build()
     grant = _grant(loop)
     assert grant is not None
-    assert grant.plan_summary in speaker.said, "the readback was not spoken"
+    assert grant.plan_summary in said, "the readback was not spoken"
     row = _kinds(events, "grant")[0]
     assert row["granted"] is True
     assert row["plan_summary"] == grant.plan_summary, "the exact sentence must be stored"
@@ -191,7 +188,7 @@ def test_a_grant_is_read_back_before_it_is_given():
 def test_a_refused_grant_is_still_logged():
     """"The assistant asked for more than it needed" is exactly the signal
     worth noticing, and it is invisible if only the accepted ones are kept."""
-    loop, _spy, _speaker, events = build(confirm=StubConfirm(verdicts=["no"]))
+    loop, _spy, _said, events = build(confirm=StubConfirm(verdicts=["no"]))
     assert _grant(loop) is None
     assert _kinds(events, "grant")[0]["granted"] is False
     assert loop.active_grant is None
@@ -199,7 +196,7 @@ def test_a_refused_grant_is_still_logged():
 
 def test_a_visual_ceiling_forces_the_visual_channel():
     console = FakeConsole("yes")
-    loop, _spy, _speaker, _events = build(console=console)
+    loop, _spy, _said, _events = build(console=console)
     grant = _grant(loop, ceiling=RiskTier.CONFIRM_VISUAL)
     assert grant is not None
     assert grant.granted_via == "visual", "a spoken yes must never mint a visual grant"
@@ -207,9 +204,9 @@ def test_a_visual_ceiling_forces_the_visual_channel():
 
 
 def test_a_visual_grant_is_refused_when_there_is_no_screen():
-    loop, _spy, speaker, _events = build(console=FakeConsole(present=False))
+    loop, _spy, said, _events = build(console=FakeConsole(present=False))
     assert _grant(loop, ceiling=RiskTier.CONFIRM_VISUAL) is None
-    assert any("no screen" in s for s in speaker.said)
+    assert any("no screen" in s for s in said)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +216,7 @@ def test_a_visual_grant_is_refused_when_there_is_no_screen():
 
 def test_a_grant_answers_a_spoken_confirmation_without_asking_again():
     confirm = StubConfirm(verdicts=["yes"])
-    loop, spy, speaker, events = build(confirm=confirm)
+    loop, spy, said, events = build(confirm=confirm)
     _grant(loop)
     before = len(confirm.calls)
 
@@ -236,14 +233,14 @@ def test_a_grant_answers_a_spoken_confirmation_without_asking_again():
         "in this system that means 'was skipped'"
     )
     assert row[0]["grant_id"] == loop.active_grant.id
-    assert not any("Should I" in s for s in speaker.said)
+    assert not any("Should I" in s for s in said)
 
 
 def test_the_grant_is_never_an_input_to_the_tier():
     """`tier = max(spec.floor, floor_hint, derived)` is untouched. Policy is
     called with exactly the same four arguments whether or not a grant exists,
     and it is never handed one."""
-    loop, _spy, _speaker, _events = build()
+    loop, _spy, _said, _events = build()
     _grant(loop)
     outcome = TurnOutcome(woke=True)
     loop._handle_call(ToolCall("move_files", {}), "move them", outcome)
@@ -257,7 +254,7 @@ def test_a_spoken_grant_can_never_answer_a_visual_confirmation():
     # "yes" approves the GRANT card; "no thanks" is what the action card gets,
     # and the point of the test is that the action card appears at all.
     console = FakeConsole("yes", "no thanks")
-    loop, spy, _speaker, events = build(tier=RiskTier.CONFIRM_VISUAL, console=console)
+    loop, spy, _said, events = build(tier=RiskTier.CONFIRM_VISUAL, console=console)
     _grant(loop, ceiling=RiskTier.CONFIRM_VISUAL, replies=["yes"])
     assert loop.active_grant.granted_via == "visual"
     # Now downgrade the live grant to a SPOKEN one, exactly as if it had been
@@ -277,20 +274,20 @@ def test_an_out_of_scope_tool_falls_through_to_a_real_question():
     # Two yeses: one for the grant, one for the question the grant fails to
     # answer. That second one is the whole point.
     confirm = StubConfirm(verdicts=["yes", "yes"])
-    loop, spy, speaker, events = build(confirm=confirm)
+    loop, spy, said, events = build(confirm=confirm)
     _grant(loop, scope=GrantScope(tools=frozenset({"something_else"})))
 
     outcome = TurnOutcome(woke=True)
     loop._scripted_replies = ["yes"]
     loop._handle_call(ToolCall("move_files", {}), "move them", outcome)
-    assert any("Should I" in s for s in speaker.said), "the user was never asked"
+    assert any("Should I" in s for s in said), "the user was never asked"
     assert spy.runs, "the answered question did not run the step"
     miss = [e for e in events if e.kind == "grant_miss"]
     assert miss and "isn't one of the things" in miss[0].payload["reason"]
 
 
 def test_stop_revokes_the_grant_and_every_unspent_warrant():
-    loop, spy, _speaker, events = build()
+    loop, spy, _said, events = build()
     grant = _grant(loop)
     said = loop.stop("you said stop")
     assert "stopped" in said.lower()
@@ -314,7 +311,7 @@ def _warranted(loop: VoiceLoop, spy: SpyTool, action: ResolvedAction, tier: Risk
 
 
 def test_a_warrant_for_a_different_action_is_refused_at_the_chokepoint():
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = _step(1)
     disposition, warrant = _warranted(loop, spy, action, RiskTier.CONFIRM_VOICE)
     with pytest.raises(AssertionError, match="different action"):
@@ -326,7 +323,7 @@ def test_a_warrant_for_a_different_action_is_refused_at_the_chokepoint():
 
 def test_an_expired_warrant_is_refused_at_the_chokepoint():
     clock = Clock()
-    loop, spy, _speaker, _events = build(clock=clock)
+    loop, spy, _said, _events = build(clock=clock)
     action = _step()
     disposition, warrant = _warranted(loop, spy, action, RiskTier.CONFIRM_VOICE)
     clock.t += 1000.0
@@ -336,7 +333,7 @@ def test_an_expired_warrant_is_refused_at_the_chokepoint():
 
 
 def test_a_warrant_pays_exactly_once():
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = _step()
     disposition, warrant = _warranted(loop, spy, action, RiskTier.ANNOUNCE)
     assert loop._execute(spy, action, disposition, TurnOutcome(), confirmed=True,
@@ -349,7 +346,7 @@ def test_a_warrant_pays_exactly_once():
 def test_a_forged_warrant_the_book_never_issued_is_refused():
     from daa.contracts import Warrant
 
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = _step()
     forged = Warrant(
         id="deadbeef",
@@ -372,7 +369,7 @@ def test_a_forged_warrant_the_book_never_issued_is_refused():
 
 
 def test_a_voice_warrant_cannot_authorize_the_visual_tier():
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     action = _step()
     disposition, warrant = _warranted(loop, spy, action, RiskTier.CONFIRM_VISUAL)
     # Issued via="voice", so `visual_ok` is False however high the tier says.
@@ -387,7 +384,7 @@ def test_a_voice_warrant_cannot_authorize_the_visual_tier():
 
 
 def test_a_job_runs_every_step_through_the_one_chokepoint(tmp_path):
-    loop, spy, _speaker, events = build(tmp_path=tmp_path)
+    loop, spy, _said, events = build(tmp_path=tmp_path)
     grant = _grant(loop)
     agent = FakeAgent(plan=[_step(1), _step(2), _step(3)])
     loop.registry.tools[agent.spec.name] = agent
@@ -405,20 +402,20 @@ def test_a_job_runs_every_step_through_the_one_chokepoint(tmp_path):
 
 
 def test_a_job_never_speaks_it_posts_a_notice(tmp_path):
-    loop, _spy, speaker, _events = build(tmp_path=tmp_path)
+    loop, _spy, said, _events = build(tmp_path=tmp_path)
     grant = _grant(loop)
     agent = FakeAgent(plan=[_step(1), _step(2)], summary="Filed two things.")
     loop.registry.tools[agent.spec.name] = agent
-    said_before = list(speaker.said)
+    said_before = list(said)
 
     loop.start_job(agent, agent.resolve(), grant, threaded=False)
-    assert speaker.said == said_before, "a background job talked"
+    assert said == said_before, "a background job talked"
     assert [n.text for n in loop.notices.pending()] == ["Filed two things."]
 
 
 def test_a_job_step_outside_the_grant_asks_and_stops_if_told_no(tmp_path):
     confirm = StubConfirm(verdicts=["yes", "no"])
-    loop, spy, _speaker, events = build(tmp_path=tmp_path, confirm=confirm)
+    loop, spy, _said, events = build(tmp_path=tmp_path, confirm=confirm)
     grant = _grant(loop, scope=GrantScope(tools=frozenset({"nothing_at_all"})))
     agent = FakeAgent(plan=[_step(1), _step(2)])
     loop.registry.tools[agent.spec.name] = agent
@@ -432,7 +429,7 @@ def test_a_job_step_outside_the_grant_asks_and_stops_if_told_no(tmp_path):
 
 
 def test_stopping_a_job_stops_it_between_steps(tmp_path):
-    loop, spy, _speaker, _events = build(tmp_path=tmp_path)
+    loop, spy, _said, _events = build(tmp_path=tmp_path)
     grant = _grant(loop)
     stopper: dict[str, Any] = {}
 
@@ -458,7 +455,7 @@ def test_the_threaded_path_is_driven_entirely_by_queue_events(tmp_path):
     """Deterministic by construction: every handoff is a queue put, including
     the one that says the job ended, so the loop blocks until something really
     happened. There is no sleep and no polling interval anywhere."""
-    loop, spy, _speaker, _events = build(tmp_path=tmp_path)
+    loop, spy, _said, _events = build(tmp_path=tmp_path)
     grant = _grant(loop)
     agent = FakeAgent(plan=[_step(1), _step(2), _step(3)])
     loop.registry.tools[agent.spec.name] = agent
@@ -476,7 +473,7 @@ def test_the_threaded_path_is_driven_entirely_by_queue_events(tmp_path):
 
 
 def test_only_one_job_at_a_time_is_a_question_not_a_queue(tmp_path):
-    loop, _spy, _speaker, events = build(tmp_path=tmp_path)
+    loop, _spy, _said, events = build(tmp_path=tmp_path)
     grant = _grant(loop)
     agent = FakeAgent(plan=[_step(1)])
     loop.registry.tools[agent.spec.name] = agent
@@ -494,7 +491,7 @@ def test_a_background_job_cannot_steal_the_reply_to_the_question_in_front_of_you
     """The whole reason notices and job consents drain only at explicit drain
     points. `_next_reply` pops from ONE queue; a job asking mid-`_confirm`
     would consume the answer the user is giving to something else."""
-    loop, spy, _speaker, _events = build()
+    loop, spy, _said, _events = build()
     drained: list[bool] = []
 
     class Nosy(StubConfirm):
@@ -520,12 +517,12 @@ def test_a_background_job_cannot_steal_the_reply_to_the_question_in_front_of_you
 
 
 def test_a_notice_is_not_an_utterance():
-    """It is TTS from a string a job produced: it may not enter the transcript,
+    """It is one line from a string a job produced: it may not enter the transcript,
     reach the model, or start a turn."""
-    loop, _spy, speaker, events = build()
+    loop, _spy, said, events = build()
     loop.notices.post("job1", "that download finished")
     loop.handle_text("hello")
-    assert "that download finished." in speaker.said
+    assert "that download finished." in said
     turns = [str(t) for t in loop.transcript.recent()]
     assert not any("download finished" in t for t in turns), (
         "a notice entered the conversation the model sees"
@@ -535,12 +532,12 @@ def test_a_notice_is_not_an_utterance():
 
 
 def test_notices_never_land_on_somebody_elses_sentence():
-    loop, _spy, speaker, _events = build()
+    loop, _spy, said, _events = build()
     loop.mic = FakeMic(utterances=["so anyway I told him no"])
     loop.gate = StubGate(default=StubWake(wake=False, addressed_p=0.02))
     loop.notices.post("job1", "that download finished")
     loop.run()
-    assert speaker.said == [], "daa spoke into an utterance the gate dropped"
+    assert said == [], "daa spoke into an utterance the gate dropped"
     assert loop.notices.pending(), "the notice was consumed anyway"
 
 
@@ -572,7 +569,7 @@ def _rollback_world(
 ):
     from test_voice_loop import StubEntry
 
-    loop, spy, speaker, events = build(
+    loop, spy, said, events = build(
         tier=RiskTier.ANNOUNCE,
         confirm=StubConfirm(verdicts=verdicts if verdicts is not None else ["yes"] * 8),
     )
@@ -591,13 +588,13 @@ def _rollback_world(
             journal.entries[stale_at], stale="They've changed since I did that."
         )
     loop.journal = journal
-    return loop, spy, speaker, events, journal
+    return loop, spy, said, events, journal
 
 
 def test_rollback_asks_once_and_runs_every_inverse():
-    loop, spy, speaker, events, journal = _rollback_world(3)
+    loop, spy, said, events, journal = _rollback_world(3)
     loop.rollback("cp1", replies=["yes"])
-    questions = [s for s in speaker.said if s.endswith("?")]
+    questions = [s for s in said if s.endswith("?")]
     assert len(questions) == 1, f"the user was asked {len(questions)} times, not once"
     assert "three things" in questions[0]
     assert len(spy.runs) == 3
@@ -609,10 +606,10 @@ def test_rollback_asks_once_and_runs_every_inverse():
 def test_rollback_stops_at_the_first_stale_row_and_says_so():
     """A rollback that ploughs through stale entries is a second mutation
     wearing an undo's clothes."""
-    loop, spy, speaker, events, _journal = _rollback_world(3, stale_at=1)
+    loop, spy, said, events, _journal = _rollback_world(3, stale_at=1)
     loop.rollback("cp1", replies=["yes"])
     assert len(spy.runs) == 1, "it carried on past a row the world had moved under"
-    summary = speaker.said[-1]
+    summary = said[-1]
     assert "one of" in summary and "two" in summary
     assert "changed since" in summary
     row = _kinds(events, "rollback")[0]
@@ -620,11 +617,11 @@ def test_rollback_stops_at_the_first_stale_row_and_says_so():
 
 
 def test_a_sealed_checkpoint_changes_the_sentence_not_the_answer():
-    loop, spy, speaker, events, _journal = _rollback_world(
+    loop, spy, said, events, _journal = _rollback_world(
         2, sealed="the email has already gone"
     )
     loop.rollback("cp1", replies=["yes"])
-    question = next(s for s in speaker.said if s.endswith("?"))
+    question = next(s for s in said if s.endswith("?"))
     assert "I can put back" in question
     assert "the email has already gone" in question, (
         "sealing must state the boundary BEFORE the yes, not after it"
@@ -636,7 +633,7 @@ def test_a_sealed_checkpoint_changes_the_sentence_not_the_answer():
 def test_rollback_refuses_an_unverifiable_row_like_every_other_undo():
     from test_voice_loop import StubEntry
 
-    loop, spy, _speaker, _events, journal = _rollback_world(0)
+    loop, spy, _said, _events, journal = _rollback_world(0)
     journal.entries.append(
         StubEntry(
             action=UndoAction(description="x", tool="set_clipboard", args={}),
@@ -649,7 +646,7 @@ def test_rollback_refuses_an_unverifiable_row_like_every_other_undo():
 
 
 def test_declining_a_rollback_runs_nothing():
-    loop, spy, _speaker, events, _journal = _rollback_world(3, verdicts=["no"])
+    loop, spy, _said, events, _journal = _rollback_world(3, verdicts=["no"])
     loop.rollback("cp1", replies=["no"])
     assert spy.runs == []
     assert _kinds(events, "rollback")[0]["stopped_reason"] == "not confirmed"
@@ -659,12 +656,12 @@ def test_rollback_cannot_be_aggregated_past_the_voice_tier():
     """One spoken yes covers a window of CONFIRM_VOICE inverses. It does not
     reach CONFIRM_VISUAL, because that tier exists precisely because speech is
     not good enough."""
-    loop, spy, speaker, _events, _journal = _rollback_world(2)
+    loop, spy, said, _events, _journal = _rollback_world(2)
     loop.policy_decide = stub_policy(RiskTier.CONFIRM_VISUAL)
     loop.console = FakeConsole(present=False)
     loop.rollback("cp1", replies=["yes"])
     assert spy.runs == [], "an aggregate spoken yes reached the visual tier"
-    assert any("no screen" in s for s in speaker.said)
+    assert any("no screen" in s for s in said)
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +676,7 @@ def test_a_grant_cannot_answer_for_an_instruction_that_came_off_the_disk():
     that names move_files", which is the whole attack the raise exists for."""
     from test_voice_loop import StubEntry
 
-    loop, spy, speaker, events = build(tier=RiskTier.ANNOUNCE)
+    loop, spy, said, events = build(tier=RiskTier.ANNOUNCE)
     _grant(loop)
     loop.journal.entries.append(
         StubEntry(
@@ -689,7 +686,7 @@ def test_a_grant_cannot_answer_for_an_instruction_that_came_off_the_disk():
         )
     )
     loop.undo_last(replies=["yes"])
-    assert any("Should I" in s for s in speaker.said), (
+    assert any("Should I" in s for s in said), (
         "the grant answered a confirmation raised by an untrusted source"
     )
     assert spy.runs, "the answered question did not run"
@@ -699,13 +696,13 @@ def test_a_grant_cannot_answer_for_an_instruction_that_came_off_the_disk():
 def test_a_grant_cannot_answer_for_a_tool_the_router_never_offered():
     """Same rule, other source: a tool nobody routed for this utterance is
     exactly the kind of thing the user should get a beat to say no to."""
-    loop, spy, speaker, events = build(tier=RiskTier.ANNOUNCE)
+    loop, spy, said, events = build(tier=RiskTier.ANNOUNCE)
     _grant(loop)
     outcome = TurnOutcome(woke=True)
     loop._scripted_replies = ["yes"]
     loop._handle_call(
         ToolCall("move_files", {}), "move them", outcome, allowed=frozenset({"get_weather"})
     )
-    assert any("Should I" in s for s in speaker.said)
+    assert any("Should I" in s for s in said)
     assert not [r for r in _kinds(events, "confirmation") if r["via"] == "grant"]
     assert spy.runs

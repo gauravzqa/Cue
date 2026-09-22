@@ -3,8 +3,8 @@
 This is the test worth more than the unit tests around it. Everything below
 the wire is the shipping code: the real `VoiceLoop`, the real `_dispatch`, the
 real `_confirm_visual`, the real `_execute` with its assertions. Only the four
-things that would need hardware or keys are fakes -- the tool, the model, the
-speaker and the policy -- and the frames pushed in are byte-for-byte the ones
+things that would need hardware or keys are fakes -- the tool, the model
+and the policy -- and the frames pushed in are byte-for-byte the ones
 `AppModel.swift` sends.
 
 What it is here to catch:
@@ -39,7 +39,6 @@ from daa.ui.bridge import Bridge
 from daa.ui.protocol import Method, Request, Response
 from daa.voice.llm import FakeLLM, LLMTurn, ToolCall
 from daa.voice.loop import VoiceLoop
-from daa.voice.tts import FakeSpeaker
 from test_bridge_wire import (  # the pipes and the stubs, shared deliberately
     ASSESSMENT,
     SCRIPT_BODY,
@@ -200,7 +199,6 @@ def world(
     loop = VoiceLoop(
         settings=Settings(dry_run=dry_run),
         local_stt=None,
-        speaker=FakeSpeaker(),
         gate=gate,
         router=None,
         risk=None,
@@ -455,14 +453,20 @@ def test_the_docks_vad_is_what_says_the_turn_ended():
         w.answer_card(granted=False, reason="cancelled")
 
 
-def test_onset_cuts_the_speaking_so_barge_in_keeps_working():
-    with world() as w:
-        w.loop.speaker.say("a long sentence daa is half way through")
+def test_onset_is_accepted_and_changes_nothing_now_that_nothing_plays():
+    """daa has no audio out, so there is nothing for onset to cut off.
+
+    The frame is still part of the protocol and the dock still sends it, so
+    the bridge must swallow it without noticing -- an onset that raised, or
+    that dropped the turn on the floor, would be worse than one that does
+    nothing at all.
+    """
+    with world(tier=RiskTier.ANNOUNCE) as w:
         w.stdin.push(protocol.event(Method.MIC_ONSET))
         w.stdin.push(protocol.request("d1", Method.DOCTOR))  # a fence: ordered after onset
         w.out.wait(lambda fs: any(isinstance(f, Response) and f.id == "d1" for f in fs))
-        assert w.loop.speaker.stops >= 1
-        assert "a long sentence daa is half way through" in w.loop.speaker.interrupted
+        w.typed("run the script")
+        w.out.wait(lambda fs: bool(w.tool.runs))
 
 
 # ---------------------------------------------------------------------------
@@ -536,13 +540,13 @@ def test_the_state_machine_ends_where_it_started():
             f.params["phase"] for f in w.out.frames() if getattr(f, "method", "") == Method.STATE
         ]
         assert phases[0] == "idle" and phases[-1] == "idle"
-        assert "thinking" in phases and "speaking" in phases
+        assert "thinking" in phases
 
 
 def test_nothing_the_bridge_sends_is_a_phase_the_dock_renders_as_degraded():
     """An unrecognised phase renders as `degraded`, not as idle: a dock that
     looks calm for a state it does not understand is lying."""
-    known = {"idle", "listening", "thinking", "speaking", "awaiting", "working", "degraded"}
+    known = {"idle", "listening", "thinking", "awaiting", "working", "degraded"}
     with world(tier=RiskTier.ANNOUNCE) as w:
         w.typed("run the script")
         w.out.wait(lambda fs: bool(w.tool.runs))

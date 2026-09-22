@@ -54,7 +54,6 @@ from daa.voice.stt import (
     no_network,
     resolve_local_model,
 )
-from daa.voice.tts import FakeSpeaker
 
 # Resolved at import, before any test repoints HOME or the HF cache.
 MODEL_DIR = resolve_local_model()
@@ -480,14 +479,12 @@ def test_file_audio_through_vad_whisper_gate_and_loop(speech, local):
     tool = SpyTool()
     llm = FakeLLM(turns=[LLMTurn(tool_calls=(ToolCall("open_app", {"name": "Safari"}),))])
     events: list[Any] = []
-    speaker = FakeSpeaker()
     mic = WavFileMic(_stream(speech, ["overheard", "wake"]))
     loop = VoiceLoop(
         settings=Settings(dry_run=True, always_on=False),
         mic=mic,
         local_stt=local,
         cloud_stt=None,
-        speaker=speaker,
         gate=AddressGate(jev, Settings(dry_run=True)),
         router=None,
         risk=_Risk(),
@@ -528,7 +525,7 @@ def test_file_audio_through_vad_whisper_gate_and_loop(speech, local):
 def test_daa_listen_end_to_end_from_a_file(speech, monkeypatch, tmp_path, capsys):
     """`daa listen` as shipped: cli -> build_mic -> build_loop -> build_local.
     Only build_mic is swapped (for the file); every other provider is the one
-    `daa listen` builds on a keyless machine -- FakeJev, FakeLLM, --silent."""
+    `daa listen` builds on a keyless machine -- FakeJev, FakeLLM."""
     from daa import cli
     from daa.voice import mic as mic_mod
 
@@ -547,7 +544,7 @@ def test_daa_listen_end_to_end_from_a_file(speech, monkeypatch, tmp_path, capsys
         return loop
 
     monkeypatch.setattr(cli, "_build", capture)
-    assert cli.main(["listen", "--silent", "--max-segments", "2"]) == 0
+    assert cli.main(["listen", "--max-segments", "2"]) == 0
 
     (loop,) = built
     assert isinstance(loop.local_stt, LocalTranscriber), "daa listen did not get local STT"
