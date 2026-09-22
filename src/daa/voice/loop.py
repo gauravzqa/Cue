@@ -726,6 +726,31 @@ class VoiceLoop:
     ) -> bool:
         tier = disposition.tier
 
+        # An action that resolved to nothing must not reach a confirmation.
+        #
+        # `resolve()` already knows it failed -- it puts the sentence in
+        # `args["reason"]` and `run()` returns it -- but the readback in
+        # between is built from `targets`, and with no targets `describe()`
+        # degrades to the bare verb. At CONFIRM_VOICE that asks "Should I
+        # press?", a question with no content, and only answers "I could not
+        # find the ok button" AFTER the user has said yes.
+        #
+        # Fail-safe is not good enough here. A confirmation with nothing in it
+        # is precisely the kind a person learns to say yes to, and every such
+        # yes is training for the one that matters. Refuse first, say why, and
+        # never spend a confirmation on an action that cannot happen.
+        if not action.targets and tool.spec.floor >= RiskTier.ANNOUNCE:
+            why = str(action.args.get("reason") or "").strip()
+            self._speak(why or f"I could not work out what to {action.verb or 'do'}.", outcome)
+            self._emit(
+                "unresolved",
+                tool=tool.spec.name,
+                verb=action.verb,
+                requested=str(action.args.get("requested_target") or "")[:120],
+                alternates=len(action.args.get("alternates") or ()),
+            )
+            return False
+
         if tier is RiskTier.REFUSE:
             self._speak(
                 _NO_POLICY if disposition.reason == "safety policy unavailable"
@@ -939,8 +964,25 @@ class VoiceLoop:
         typed = ""
         self._confirming += 1
         try:
-            console.write(_visual_detail(action, disposition))
-            typed = console.ask("type yes to approve, anything else to cancel: ")
+            present = getattr(console, "present", None)
+            # `callable`, not `is not None`. A console whose `present` is a
+            # flag rather than a renderer -- and one exists in the test tree --
+            # cannot draw a card, and quietly refusing every CONFIRM_VISUAL
+            # because of a name collision is not fail-closed, it is broken.
+            if callable(present):
+                # A console that can render the action itself gets the
+                # objects rather than a pre-rendered 68-column blob. Same
+                # contract as the typed path: it returns True only for a
+                # deliberate approval, and anything else -- False, None, a
+                # raise, a timeout, a dead peer -- is a refusal.
+                #
+                # `is True`, not truthiness. A `present` that returns a
+                # non-empty string, a Mock, or 1 is a bug, and the safe
+                # reading of a bug on this path is "not approved".
+                typed = "yes" if present(action, disposition) is True else ""
+            else:
+                console.write(_visual_detail(action, disposition))
+                typed = console.ask("type yes to approve, anything else to cancel: ")
         except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
             self._emit("error", where="console", error=str(exc))
             typed = ""

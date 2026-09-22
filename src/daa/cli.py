@@ -234,6 +234,33 @@ def cmd_undo(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# bridge
+# ---------------------------------------------------------------------------
+
+
+def cmd_bridge(args: argparse.Namespace) -> int:
+    """Speak the dock protocol on stdin/stdout. Not for humans.
+
+    THE FIRST LINE OF THIS FUNCTION IS THE IMPORTANT ONE. fd 1 is the protocol
+    and nothing else: one stray `print()` anywhere in the tree -- ours, a
+    dependency's, at import time, on a machine we have never seen -- corrupts
+    the stream, and the symptom is a dock that silently stops updating. So the
+    real stdout is taken away and given a private handle before anything else
+    is imported, and every remaining writer is pointed at stderr, which the
+    dock tees to ~/Library/Logs/daa/python.log and to its own stderr.
+    """
+    # `daa.ui` imports nothing but os and sys, so reaching this function
+    # cannot itself have printed. Everything heavier is imported after.
+    from daa.ui import steal_stdout
+
+    real_stdout = steal_stdout()
+
+    from daa.ui.bridge import serve
+
+    return serve(real_stdout)
+
+
+# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -254,6 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="what is wired, what is live, what is fake")
     doctor.set_defaults(func=cmd_doctor)
+
+    bridge = sub.add_parser(
+        "bridge",
+        help="speak the dock protocol on stdin/stdout (not for humans)",
+    )
+    bridge.set_defaults(func=cmd_bridge)
 
     undo = sub.add_parser("undo", help="reverse the last recorded mutation")
     undo.add_argument("--list", action="store_true", help="show the journal instead of undoing")

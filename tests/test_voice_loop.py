@@ -1493,3 +1493,160 @@ def test_a_spoken_yes_cannot_forge_the_visual_token():
             visual=object(),
         )
     assert spy.runs == []
+
+
+# ---------------------------------------------------------------------------
+# CONFIRM_VISUAL: a console that renders the action itself
+#
+# A console with a `present` attribute gets the OBJECTS -- the ResolvedAction
+# and the Disposition -- instead of `_visual_detail`'s 68-column blob, so it
+# can gate on the end of the script, flag the consequences separately and say
+# out loud that the judgment was synthetic. None of those is possible with a
+# pre-rendered string.
+#
+# The contract is the same one the typed path has: True, and only True, is an
+# approval. `TerminalConsole` deliberately does NOT grow this attribute, so
+# every test above still exercises the write/ask branch.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class PresentConsole:
+    """A dock-shaped console. `write`/`ask` exist only so a test can prove
+    they are never reached."""
+
+    answer: Any = True
+    raises: BaseException | None = None
+    is_available: bool = True
+    seen: list[tuple[Any, Any]] = field(default_factory=list)
+    written: list[str] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)
+
+    def available(self) -> bool:
+        return self.is_available
+
+    def present(self, action: Any, disposition: Any) -> Any:
+        self.seen.append((action, disposition))
+        if self.raises is not None:
+            raise self.raises
+        return self.answer
+
+    def write(self, text: str) -> None:
+        self.written.append(text)
+
+    def ask(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return "yes\n"
+
+
+def _watch_execute(loop: VoiceLoop) -> dict[str, Any]:
+    """Capture the kwargs `_dispatch` hands `_execute`, without changing it."""
+    captured: dict[str, Any] = {}
+    real = loop._execute
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    loop._execute = spy  # type: ignore[method-assign]
+    return captured
+
+
+def test_a_present_console_approves_and_still_carries_the_visual_token():
+    from daa.voice.loop import _VISUAL_OK
+
+    console = PresentConsole(answer=True)
+    loop, tool, _speaker, events = _visual_world(console)
+    captured = _watch_execute(loop)
+
+    loop.run()
+
+    assert len(tool.runs) == 1
+    assert captured["visual"] is _VISUAL_OK, "the dock's boolean lost the token on the way in"
+    assert any(e.kind == "visual_confirm" and e.payload["granted"] for e in events)
+    # The objects, not a blob: the card has to be able to gate on the script.
+    action, disposition = console.seen[0]
+    assert action.args["script"] == SCRIPT_BODY
+    assert disposition.tier is RiskTier.CONFIRM_VISUAL
+
+
+def test_a_present_console_that_says_false_refuses_and_says_so():
+    console = PresentConsole(answer=False)
+    loop, tool, speaker, events = _visual_world(console)
+
+    loop.run()
+
+    assert tool.runs == []
+    assert "Okay, leaving it." in speaker.said
+    assert any(e.kind == "abandoned" for e in events)
+    assert any(e.kind == "visual_confirm" and not e.payload["granted"] for e in events)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, "yes", "YES", 1, 1.0, ["yes"], object()],
+    ids=["none", "yes-string", "YES-string", "one", "one-float", "list", "object"],
+)
+def test_only_the_literal_True_approves(answer: Any):
+    """`is True`, not truthiness.
+
+    A `present` that returns a non-empty string, a Mock, or 1 is a BUG, and
+    the safe reading of a bug on this path is "not approved". A test double
+    that silently approves a real action is the worst failure available here.
+    """
+    console = PresentConsole(answer=answer)
+    loop, tool, speaker, _events = _visual_world(console)
+
+    loop.run()
+
+    assert tool.runs == [], f"present() returning {answer!r} approved an action"
+    assert "Okay, leaving it." in speaker.said
+
+
+def test_a_present_that_raises_is_a_refusal_and_is_logged():
+    console = PresentConsole(raises=OSError("the dock died"))
+    loop, tool, speaker, events = _visual_world(console)
+
+    loop.run()
+
+    assert tool.runs == []
+    assert "Okay, leaving it." in speaker.said
+    errors = [e for e in events if e.kind == "error" and e.payload.get("where") == "console"]
+    assert len(errors) == 1
+    assert "the dock died" in errors[0].payload["error"]
+
+
+def test_a_present_console_is_never_asked_to_write_or_ask():
+    """The two branches are exclusive. A console that got both would be a
+    console whose behaviour depended on the order of two getattrs."""
+    console = PresentConsole(answer=True)
+    loop, _tool, _speaker, _events = _visual_world(console)
+
+    loop.run()
+
+    assert console.written == [], "the dock was sent a pre-rendered 68-column blob"
+    assert console.prompts == [], "the dock was asked to read from stdin"
+    assert len(console.seen) == 1
+
+
+def test_a_present_console_with_no_screen_still_refuses_before_presenting():
+    console = PresentConsole(answer=True, is_available=False)
+    loop, tool, speaker, events = _visual_world(console)
+
+    loop.run()
+
+    assert tool.runs == []
+    assert console.seen == [], "a card was raised on a console that said it wasn't there"
+    assert "screen" in speaker.said[0]
+    assert any(e.kind == "deferred_visual" for e in events)
+
+
+def test_the_terminal_console_has_no_present_attribute():
+    """The reason the ten-line edit is safe. If TerminalConsole ever grows a
+    `present`, every console test above silently reroutes to the other branch
+    and stops testing what it says it tests."""
+    from daa.voice.loop import TerminalConsole
+
+    assert not hasattr(TerminalConsole, "present")
+    assert not hasattr(TerminalConsole(), "present")
+    assert hasattr(TerminalConsole, "write") and hasattr(TerminalConsole, "ask")
