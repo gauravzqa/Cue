@@ -114,7 +114,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     write(f"  mic                {_mark(mic_mod.SoundDeviceMic.available())} "
           f"({'sounddevice' if mic_mod.SoundDeviceMic.available() else 'FakeMic'})\n")
-    write(f"  stt.local          {_mark(stt_mod.LocalTranscriber.available())}\n")
+    write(f"  stt.local          {_mark(stt_mod.LocalTranscriber.available())} "
+          f"({stt_mod.LocalTranscriber.describe()})\n")
     write(f"  stt.cloud          {_mark(stt_mod.build_cloud(settings) is not None)}\n")
     speaker = tts_mod.build_speaker(settings)
     write(f"  tts                {_mark(speaker.name != 'fake')} ({speaker.name})\n")

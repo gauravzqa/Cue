@@ -13,7 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-voice = ["sounddevice>=0.4.7", "numpy>=1.26", "silero-vad>=5.1", "torch>=2.2"]
+# No torch, no silero: the VAD is an adaptive energy threshold (voice/mic.py),
+# and local STT is faster-whisper on CTranslate2 (the `stt` extra).
+voice = ["sounddevice>=0.4.7", "numpy>=1.26"]
 # An EXTRA, not a core dependency, so `import daa` stays light and Playwright's
 # 557 MB browser download stays opt-in. daa drives the user's installed Chrome
 # via `channel="chrome"`, so `playwright install` is not needed at all on a
@@ -22,6 +24,10 @@ voice = ["sounddevice>=0.4.7", "numpy>=1.26", "silero-vad>=5.1", "torch>=2.2"]
 # and on the absence of `Page.accessibility`, both of which are 1.6x-era API
 # facts rather than guarantees.
 browser = ["playwright>=1.63,<1.64"]
+# On-device speech to text for the local tier (daa/voice/stt.py). CTranslate2,
+# int8, CPU -- no torch. The model itself is NOT a package: fetch it once with
+# `hf download Systran/faster-whisper-tiny.en` (the transcriber never downloads).
+stt = ["faster-whisper>=1.2,<2"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.6"]
 
 [project.scripts]

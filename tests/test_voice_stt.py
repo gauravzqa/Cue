@@ -98,8 +98,8 @@ def test_sounddevice_is_never_imported_at_module_scope():
 def test_sounddevice_rms_is_pure_python():
     # Runs without numpy, which is an optional extra.
     mic = SoundDeviceMic()
-    assert mic._rms(b"\x00\x00" * 100) == 0.0
-    assert mic._rms(b"\xff\x7f" * 100) > 32_000
+    assert mic.vad.rms(b"\x00\x00" * 100) == 0.0
+    assert mic.vad.rms(b"\xff\x7f" * 100) > 32_000
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,12 @@ def test_transcription_empty():
     assert Transcription(text="x").empty is False
 
 
-def test_local_backend_raises_a_handled_error_not_a_crash():
+def test_local_backend_raises_a_handled_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    # No model on disk: a handled STTUnavailable, never a download.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.delenv("DAA_STT_LOCAL_MODEL", raising=False)
     with pytest.raises(STTUnavailable):
         LocalTranscriber().transcribe(AudioChunk(pcm=b"hi"))
 
