@@ -83,7 +83,8 @@ In `tests/test_voice_loop.py`, next to the existing `FakeConsole` tests:
 
 - a console with `present` returning `True` approves, and `_VISUAL_OK` is still
   what reaches `_execute`;
-- `present` returning `False` refuses and speaks "Okay, leaving it.";
+- `present` returning `False` refuses and answers "Okay, leaving it." (a `speak`
+  frame; the dock writes it into the transcript);
 - `present` returning `None`, `"yes"`, or `1` **refuses** (the `is True` rule);
 - `present` raising is a refusal and emits `error where="console"`;
 - a console with `present` is **never** asked to `write` or `ask`;
@@ -244,12 +245,12 @@ Two rules the Swift decoder enforces and Python should mirror:
 
 | Method | Kind | Payload |
 |---|---|---|
-| `session.hello` | req | `{proto:1, app:"0.1.0", caps:["stt.local","tts","hotkey","confirm.visual"]}` → res `{proto:1, daa:"0.1.0"}` |
+| `session.hello` | req | `{proto:1, app:"0.1.0", caps:["stt.local","hotkey","confirm.visual"]}` → res `{proto:1, daa:"0.1.0"}` |
 | `mic.utterance` | ev | `{text, confidence, startedAt, complete, addressed}` |
 | `mic.onset` | ev | `{}` — speech started; drives barge-in, must be cheap |
 | `control.text` | ev | `{text, addressed:true}` — typed into the dock |
 | `control.alwaysOn` | req | `{on:bool}` → res `{on:bool}` (the **actual** state; the dock reverts its switch if this disagrees) |
-| `control.cancel` | ev | `{}` — Esc; abandon the current turn, speak nothing |
+| `control.cancel` | ev | `{}` — Esc; abandon the current turn, answer nothing |
 | `undo.last` | req | `{}` → res `{ok:bool, summary:str}` |
 | `doctor` | req | `{}` → res: the `daa doctor` payload, structured |
 | `session.shutdown` | req | `{}` → res, then exit |
@@ -265,7 +266,7 @@ dock times a request out at 30 s and shows the failure.
 | `ready` | ev | see below |
 | `state` | ev | `{phase, detail?, since, tasks?}` |
 | `audit` | ev | `{kind, id, at, payload}` — a verbatim redacted `AuditEvent` |
-| `speak` | ev | `{text}` |
+| `speak` | ev | `{text}` — daa's answer. **Nothing is said out loud**: the dock writes it into the transcript as a `daa` line. Send the matching `spoke` audit record too if you have one; the dock collapses the pair into a single line |
 | `confirm.request` | **req** | the approval card — §4 |
 | `confirm.cancel` | ev | `{id, reason}` — withdraw a pending card |
 | `task.update` | ev | `{id, title, progress?, cancellable, startedAt, tier}` |
@@ -276,22 +277,26 @@ the `session.hello` response:
 
 ```json
 {"daa":"0.1.0","dryRun":true,"alwaysOn":false,"jevLive":false,
- "providers":{"mic":"fake","stt":"fake","tts":"live","llm":"live","jev":"live"},
+ "providers":{"mic":"fake","stt":"fake","llm":"live","jev":"live"},
  "tools":[{"name":"run_applescript","floor":"CONFIRM_VISUAL"}],
  "missing":["pyobjc-framework-AVFoundation"]}
 ```
 
 `dryRun` **must** be present. The Swift side defaults a missing `dryRun` to
 `true` and shows the DRY RUN pill, because if the dock cannot tell whether the
-thing behind it is live, it says the safer of the two out loud. Do not rely on
+thing behind it is live, it shows the safer of the two. Do not rely on
 that default.
 
 `providers` values are compared against the literal `"live"`; anything else
 renders as a fake and is surfaced in the Set-up tab.
 
-**`state.phase`** ∈ `idle | listening | thinking | speaking | awaiting |
-working | degraded`. An unrecognised phase renders as `degraded`, not as
-`idle`: a dock that looks calm for a state it does not understand is lying.
+**`state.phase`** ∈ `idle | listening | thinking | awaiting | working |
+degraded`. An unrecognised phase renders as `degraded`, not as `idle`: a dock
+that looks calm for a state it does not understand is lying. There is **no
+`speaking` phase** — daa does not talk, and `"speaking"` on the wire is an
+unknown phase like any other, so it renders as `degraded`. While daa is
+composing an answer the phase is `thinking`; the answer itself is a `speak`
+frame, and afterwards the phase goes back to `idle`.
 
 **`audit`** kinds the dock projects into transcript lines:
 
@@ -373,8 +378,8 @@ and the History window should be able to tell them apart.
 2. **90-second fail-closed timeout.** `console.ask()` on a terminal blocks
    forever; `present()` must not. On expiry: send `confirm.cancel`, return
    `False`, and let the existing code emit `visual_confirm granted=False` and
-   speak "Okay, leaving it." *An approval you walked away from is not an
-   approval.* Audit it with `reason="timeout"` so it is distinguishable from a
+   answer "Okay, leaving it." as a `speak` frame. *An approval you walked away
+   from is not an approval.* Audit it with `reason="timeout"` so it is distinguishable from a
    refusal.
 3. **A dead or unresponsive dock is a refusal.** If the writer cannot send, or
    stdin has closed, `present()` returns `False` immediately.

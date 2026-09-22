@@ -58,6 +58,53 @@ final class DockStateTests: XCTestCase {
         XCTAssertEqual(StateUpdate(.object(["phase": .string("thinking")])).phase, .thinking)
     }
 
+    func testThereIsNoSpeakingPhase() {
+        // daa does not speak aloud. Nothing may put the dock into a phase that
+        // says it is talking, and `speaking` on the wire is an unknown phase
+        // like any other -- so it renders as degraded, not as idle.
+        XCTAssertEqual(Phase.allCases.map(\.rawValue),
+                       ["idle", "listening", "thinking", "awaiting", "working", "degraded"])
+        XCTAssertNil(Phase(rawValue: "speaking"))
+        XCTAssertEqual(StateUpdate(.object(["phase": .string("speaking")])).phase, .degraded)
+
+        // And no phase animates the icon to a rhythm it no longer has.
+        for phase in Phase.allCases {
+            var s = DockState()
+            s.phase = phase
+            XCTAssertTrue([.still, .level, .pulse, .arc].contains(s.menuBar.motion), "\(phase)")
+        }
+    }
+
+    func testDaaAnswersInWriting() {
+        // The `speak` frame stays, and its text becomes an ordinary `daa`
+        // transcript line -- the only place daa's answer ever appears.
+        let r = AuditRecord(.object([
+            "kind": .string("spoke"), "id": .string("s1"), "at": .number(1),
+            "payload": .object(["text": .string("Moved 3 files to Archive.")]),
+        ]))
+        let line = TranscriptProjection.line(for: r)!
+        XCTAssertEqual(line.speaker, .daa)
+        XCTAssertEqual(line.text, "Moved 3 files to Archive.")
+    }
+
+    func testTheSameAnswerArrivingTwiceIsOneLine() {
+        // It reaches the dock once as `speak` and once as the `spoke` audit
+        // record. Printed twice it would read as daa answering twice.
+        var ring = TranscriptRing()
+        ring.append(TranscriptLine(speaker: .daa, text: "Moved 3 files to Archive."))
+        ring.append(TranscriptLine(speaker: .daa, text: "Moved 3 files to Archive."))
+        XCTAssertEqual(ring.lines.count, 1)
+
+        // Only back-to-back plain answers collapse: the same sentence said
+        // again later in the turn, or a line that carries an undo entry, is
+        // its own event and stays.
+        ring.append(TranscriptLine(speaker: .you, text: "again"))
+        ring.append(TranscriptLine(speaker: .daa, text: "Moved 3 files to Archive."))
+        ring.append(TranscriptLine(speaker: .daa, text: "Moved 3 files to Archive.", undoID: "u1"))
+        XCTAssertEqual(ring.lines.count, 4)
+        XCTAssertEqual(ring.undoableLine?.undoID, "u1")
+    }
+
     // MARK: - the privacy boundary is visible
 
     func testLivePartialsAreOnlyShownUnderPushToTalk() {
@@ -79,8 +126,8 @@ final class DockStateTests: XCTestCase {
     // MARK: - ready
 
     func testAbsentDryRunMeansDryRun() {
-        // If the dock cannot tell whether the thing behind it is live, it says
-        // the safer of the two out loud.
+        // If the dock cannot tell whether the thing behind it is live, it shows
+        // the safer of the two.
         XCTAssertTrue(ReadyInfo(.object([:])).dryRun)
         XCTAssertFalse(ReadyInfo(.object(["dryRun": .bool(false)])).dryRun)
     }

@@ -126,7 +126,7 @@ enum Fixtures {
 
     static let ready = ev("ready", [
         "daa": "0.1.0-fake", "dryRun": true, "alwaysOn": false, "jevLive": false,
-        "providers": ["mic": "fake", "stt": "fake", "tts": "fake", "llm": "fake", "jev": "fake"],
+        "providers": ["mic": "fake", "stt": "fake", "llm": "fake", "jev": "fake"],
         "tools": [
             ["name": "run_applescript", "floor": "CONFIRM_VISUAL"],
             ["name": "move_file", "floor": "CONFIRM_VOICE"],
@@ -135,6 +135,9 @@ enum Fixtures {
         ],
         "missing": ["this is the fake bridge -- nothing here is real"],
     ])
+
+    /// `speak` — daa's answer. It is written into the transcript, never said.
+    static func speak(_ text: String) -> Frame { ev("speak", ["text": text]) }
 
     static func state(_ phase: String, _ detail: String = "", tasks: [[String: Any]]? = nil) -> Frame {
         var p: [String: Any] = ["phase": phase, "detail": detail, "since": t0]

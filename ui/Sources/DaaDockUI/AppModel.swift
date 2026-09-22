@@ -105,8 +105,12 @@ final class AppModel {
             if let line = TranscriptProjection.line(for: record) { transcript.append(line) }
 
         case Method.speak:
+            // daa does not speak aloud. `speak` is its answer, and the dock
+            // writes it into the transcript — that line is the whole of it.
+            // The ring collapses the duplicate if the matching `spoke` audit
+            // record arrives as well.
             if let text = p["text"]?.stringValue, !text.isEmpty {
-                dock.detail = text
+                transcript.append(TranscriptLine(speaker: .daa, text: text))
             }
 
         case Method.confirmCancel:
@@ -263,7 +267,7 @@ final class AppModel {
     func sendOnset() { supervisor.event(Method.micOnset) }
 
     func cancelTurn() {
-        // Esc always cancels: drop the utterance, return to idle, speak
+        // Esc always cancels: drop the utterance, return to idle, answer
         // nothing. If a card is up, Esc cancels the card instead.
         if approval != nil { resolveApproval(.escaped); return }
         supervisor.event(Method.controlCancel)

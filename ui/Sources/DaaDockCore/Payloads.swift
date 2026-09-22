@@ -34,7 +34,7 @@ public struct ReadyInfo: Sendable, Equatable {
     public init(_ p: JSONValue) {
         daaVersion = p["daa"]?.stringValue ?? "?"
         // Absent dryRun means dry run. If the dock cannot tell whether the
-        // thing behind it is live, it says the safer of the two out loud.
+        // thing behind it is live, it shows the safer of the two.
         dryRun = p["dryRun"]?.boolValue ?? true
         alwaysOn = p["alwaysOn"]?.boolValue ?? false
         jevLive = p["jevLive"]?.boolValue ?? false
@@ -56,7 +56,7 @@ public struct ReadyInfo: Sendable, Equatable {
 // MARK: - state
 
 public enum Phase: String, Sendable, CaseIterable {
-    case idle, listening, thinking, speaking, awaiting, working, degraded
+    case idle, listening, thinking, awaiting, working, degraded
 }
 
 public struct StateUpdate: Sendable, Equatable {

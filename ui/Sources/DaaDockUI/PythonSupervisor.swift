@@ -150,7 +150,9 @@ final class PythonSupervisor {
         send(.request(id: mintID(), method: Method.hello, params: .object([
             "proto": .number(Double(daaProtocolVersion)),
             "app": .string(appVersion),
-            "caps": .array([.string("stt.local"), .string("tts"), .string("hotkey"),
+            // No "tts": the dock has no way to say anything out loud, and
+            // advertising one would invite Python to send audio it cannot play.
+            "caps": .array([.string("stt.local"), .string("hotkey"),
                             .string("confirm.visual")]),
         ])))
     }

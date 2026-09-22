@@ -92,11 +92,10 @@ enum MenuBarGlyph {
         case .level:
             drawBars(rect, ink: ink, level: level)
         case .pulse:
-            let t = (sin(animationPhase * 2) + 1) / 2
-            drawBars(rect, ink: ink, level: 0.25 + 0.35 * t)
-        case .bounce:
-            let t = (sin(animationPhase * 4) + 1) / 2
-            drawBars(rect, ink: ink, level: 0.35 + 0.5 * t)
+            // Thinking is not a microphone state, so it is not bars. Three
+            // dots with a travelling highlight: at a glance, and in a still
+            // frame, it cannot be mistaken for idle or for listening.
+            drawDots(rect, ink: ink, phase: animationPhase)
         case .arc:
             drawArc(rect, ink: ink, phase: animationPhase)
         case .still:
@@ -139,6 +138,26 @@ enum MenuBarGlyph {
             let bar = NSRect(x: x, y: rect.midY - bh / 2, width: w, height: bh)
             NSBezierPath(roundedRect: bar, xRadius: w / 2, yRadius: w / 2).fill()
             x += w + gap
+        }
+    }
+
+    /// Three dots on the baseline-ish midline, one lit at a time.
+    private static func drawDots(_ rect: NSRect, ink: NSColor, phase animationPhase: Double) {
+        let d: CGFloat = 4.2
+        let gap: CGFloat = 2.6
+        let total = d * 3 + gap * 2
+        var x = rect.midX - total / 2
+        // One full trip every ~4 s at 20 Hz; each dot lifts and brightens in turn.
+        let lit = Int(animationPhase * 2.5) % 3
+        for i in 0..<3 {
+            let on = i == lit
+            ink.withAlphaComponent(on ? 1 : 0.4).setFill()
+            let size = on ? d : d - 1.2
+            let dot = NSRect(x: x + (d - size) / 2,
+                             y: rect.midY - size / 2 + (on ? 1.6 : 0),
+                             width: size, height: size)
+            NSBezierPath(ovalIn: dot).fill()
+            x += d + gap
         }
     }
 

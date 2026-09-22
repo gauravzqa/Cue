@@ -16,8 +16,7 @@ public struct MenuBarAppearance: Sendable, Equatable {
     public enum Motion: Sendable, Equatable {
         case still
         case level        // live 3-bar meter from mic RMS
-        case pulse        // indeterminate "thinking"
-        case bounce       // synced to TTS
+        case pulse        // indeterminate "thinking": travelling dots, not bars
         case arc          // background work in progress
     }
 
@@ -72,7 +71,6 @@ public struct DockState: Sendable, Equatable {
         switch phase {
         case .listening: return alwaysOn ? "listening — nothing written down yet" : "listening…"
         case .thinking: return detail.isEmpty ? "thinking…" : detail
-        case .speaking: return detail
         case .awaiting: return "waiting for your approval"
         case .working: return tasks.first?.title ?? "working…"
         case .degraded: return degradedText
@@ -118,14 +116,9 @@ public struct DockState: Sendable, Equatable {
                 accessibilityLabel: "daa is listening")
         case .thinking:
             return MenuBarAppearance(
-                symbol: "waveform", tint: .monochrome, motion: .pulse,
+                symbol: "ellipsis", tint: .monochrome, motion: .pulse,
                 opacity: 1, slashed: false, hotMic: alwaysOn,
                 accessibilityLabel: "daa is thinking")
-        case .speaking:
-            return MenuBarAppearance(
-                symbol: "waveform", tint: .monochrome, motion: .bounce,
-                opacity: 1, slashed: false, hotMic: alwaysOn,
-                accessibilityLabel: "daa is speaking. Click to interrupt.")
         default:
             return MenuBarAppearance(
                 symbol: "waveform", tint: .monochrome, motion: .still,
@@ -156,6 +149,12 @@ public struct TranscriptLine: Sendable, Equatable, Identifiable {
         self.id = id; self.speaker = speaker; self.text = text; self.at = at
         self.undoID = undoID; self.dryRun = dryRun; self.refused = refused
     }
+
+    /// A plain answer from daa: no undo entry, not a dry run, not a refusal.
+    /// Only these collapse when the same text arrives twice.
+    public var isPlainAnswer: Bool {
+        speaker == .daa && undoID == nil && !dryRun && !refused
+    }
 }
 
 /// Turns the audit stream into transcript rows.
@@ -179,6 +178,8 @@ public enum TranscriptProjection {
             return TranscriptLine(id: record.id, speaker: .you, text: text, at: record.at)
 
         case "spoke":
+            // daa's answer. It is written, not said: this line IS the answer,
+            // and the transcript is the only place it appears.
             guard let text = record.payload["text"]?.stringValue, !text.isEmpty else { return nil }
             return TranscriptLine(id: record.id, speaker: .daa, text: text, at: record.at)
 
@@ -224,6 +225,13 @@ public struct TranscriptRing: Sendable, Equatable {
     public init(capacity: Int = 24) { self.capacity = capacity }
 
     public mutating func append(_ line: TranscriptLine) {
+        // One answer is one line. daa's reply can reach the dock twice — once
+        // as the `speak` frame the dock renders as text, once as the `spoke`
+        // audit record — and the same sentence printed twice reads like daa
+        // answered twice.
+        if line.isPlainAnswer, let last = lines.last, last.isPlainAnswer, last.text == line.text {
+            return
+        }
         lines.append(line)
         if lines.count > capacity { lines.removeFirst(lines.count - capacity) }
     }

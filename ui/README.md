@@ -126,12 +126,12 @@ ui/
       SpeechEngine.swift     mic, VAD, on-device STT
       HistoryWindow.swift    history + the Set-up tab
     MicroTest/               a ~120-line XCTest stand-in (see below)
-    DaaDockTests/            70 tests, 632 assertions
+    DaaDockTests/            88 tests, 693 assertions
 ```
 
 ### States
 
-`idle · listening · thinking · speaking · awaiting · working · degraded`,
+`idle · listening · thinking · awaiting · working · degraded`,
 derived in `DockState.menuBar` and tested:
 
 - **amber is the only colour the icon ever takes.** If the icon has colour,
@@ -143,6 +143,12 @@ derived in `DockState.menuBar` and tested:
 - **an unrecognised phase renders as `degraded`, not `idle`.** A dock that
   looks calm for a state it does not understand is lying about the machine
   behind it.
+- **there is no speaking phase.** daa does not talk. Its answer arrives as a
+  `speak` frame and is written into the transcript as a `daa` line — that line
+  is the whole of the answer. `speaking` on the wire is an unknown phase like
+  any other, so it renders as `degraded`.
+- **thinking is not drawn as bars.** Bars mean the microphone; thinking is
+  three dots. In a still frame the two cannot be confused.
 
 ### The privacy boundary is visible
 
@@ -242,7 +248,7 @@ dock:
 | `withdraw` | a card Python takes back after 3 s (`confirm.cancel`) |
 | `task` | a background job reporting progress into the task strip |
 | `crash` | the child exits — watch the backoff and the degraded state |
-| anything else | an ordinary turn: thinking → speaking → execution with an ↩︎ |
+| anything else | an ordinary turn: thinking → a written answer → execution with an ↩︎ |
 
 Against the real thing, once `daa bridge` exists, it finds
 `<repo>/.venv/bin/python3` on its own; `DAA_PYTHON` and `DAA_REPO_ROOT`

@@ -181,10 +181,13 @@ enum Scenes {
                 panel(panelModel([Fixtures.audit("woke", ["text": "move those screenshots to Archive"]),
                                   Fixtures.state("thinking", "looking at what you said")]))
             },
-            Shot(name: "panel-speaking", group: g, note: "fake-bridge `state speaking \"Moved 3 files to Archive.\"`.") {
+            Shot(name: "panel-answering", group: g,
+                 note: "fake-bridge `speak \"Moved 3 files to Archive.\"` then `state idle`. daa's answer is a `daa` transcript line and nothing else — no spoken phase, no audio. The matching `spoke` audit record arrives too and is collapsed into the same line.",
+                 scroll: .bottom) {
                 panel(panelModel([Fixtures.audit("woke", ["text": "move those screenshots to Archive"]),
-                                  Fixtures.state("speaking", "Moved 3 files to Archive."),
-                                  Fixtures.audit("spoke", ["text": "Moved 3 files to Archive."])]))
+                                  Fixtures.speak("Moved 3 files to Archive."),
+                                  Fixtures.audit("spoke", ["text": "Moved 3 files to Archive."]),
+                                  Fixtures.state("idle")]))
             },
             Shot(name: "panel-awaiting", group: g, note: "fake-bridge `state awaiting \"waiting for approval\"`: amber header dot.") {
                 panel(panelModel([Fixtures.audit("woke", ["text": "script"]),
@@ -331,8 +334,7 @@ enum MenuBarShots {
             State(name: "idle", note: "idle: still glyph, 55% opacity", dock: s(.idle)),
             State(name: "idle-alwayson", note: "idle, always on: 85% opacity + hot-mic ring", dock: s(.idle, alwaysOn: true)),
             State(name: "listening", note: "listening: live 3-bar level (frames at level 0.1, 0.4, 0.7, 1.0)", dock: s(.listening)),
-            State(name: "thinking", note: "thinking: pulse (4 animation phases)", dock: s(.thinking)),
-            State(name: "speaking", note: "speaking: bounce (4 animation phases)", dock: s(.speaking)),
+            State(name: "thinking", note: "thinking: three dots, one lit in turn (4 animation phases). Not bars — thinking is not a microphone state and must not look like one", dock: s(.thinking)),
             State(name: "awaiting", note: "awaiting: amber — the only colour the icon ever takes", dock: s(.awaiting)),
             State(name: "awaiting-alwayson", note: "awaiting while always on", dock: s(.awaiting, alwaysOn: true)),
             State(name: "working", note: "working: rotating arc (4 animation phases)",

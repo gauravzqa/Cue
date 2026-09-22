@@ -20,7 +20,7 @@ Type a phrase into the dock to drive it:
     withdraw    a card that Python takes back after 3 seconds
     task        a background job that reports progress
     crash       exit(1), to watch the restart backoff
-    anything    an ordinary turn: thinking -> speaking -> execution
+    anything    an ordinary turn: thinking -> answer -> execution
 """
 
 import json
@@ -108,7 +108,6 @@ class Bridge:
             providers={
                 "mic": "fake",
                 "stt": "fake",
-                "tts": "fake",
                 "llm": "fake",
                 "jev": "fake",
             },
@@ -146,7 +145,7 @@ class Bridge:
             tier="ANNOUNCE",
             reason="recoverable and explicitly requested",
         )
-        state("speaking", "Moved 3 files to Archive.")
+        ev("speak", text="Moved 3 files to Archive.")
         audit("spoke", text="Moved 3 files to Archive.")
         audit(
             "execution",
@@ -204,7 +203,7 @@ class Bridge:
             # that daa is ASKING, not that it reversed anything.
             send({"t": "res", "id": fid, "ok": True,
                   "p": {"ok": False,
-                        "summary": "Asking out loud before I reverse that."}})
+                        "summary": "Asking before I reverse that."}})
         elif method == "session.shutdown":
             send({"t": "res", "id": fid, "ok": True, "p": {}})
             OUT.flush()
@@ -235,6 +234,7 @@ class Bridge:
                            if kind != "live" else "Ran the script."))
         else:
             audit("abandoned", tool="run_applescript", reason=reason or "not approved")
+            ev("speak", text="Okay, leaving it.")
             audit("spoke", text="Okay, leaving it.")
         state("idle")
 

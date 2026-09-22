@@ -191,8 +191,9 @@ struct DockView: View {
                     .disabled(model.undoInFlight)
                     // Undo never runs below CONFIRM_VOICE: the instruction
                     // came from a file on disk, not from the user. So the
-                    // click produces a SPOKEN confirmation, not a reversal.
-                    .help("Asks out loud before reversing “\(line.text)”.")
+                    // click produces a request for confirmation, not a
+                    // reversal.
+                    .help("Asks before reversing “\(line.text)”.")
                 }
 
                 Button { HistoryWindowController.shared.show(model: model) } label: {
@@ -375,6 +376,9 @@ struct AlwaysOnExplainer: View {
 
                 Speech is only recorded once it has woken daa. Until then the dock shows \
                 a level meter and no text — including in this window.
+
+                The microphone is one-way. daa never speaks: it answers in writing, in \
+                the dock's transcript.
                 """)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
