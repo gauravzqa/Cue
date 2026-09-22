@@ -34,7 +34,19 @@ SYSTEM_PROMPT = (
     "- One or two short sentences. No markdown, no lists, no file paths, no IDs.\n"
     "- If a tool can do what was asked, call it. Do not describe what you would do.\n"
     "- Never claim you did something a tool did not report doing.\n"
-    "- If the request is ambiguous, ask one short question instead of guessing."
+    "- If the request is ambiguous, ask one short question instead of guessing.\n"
+    # The four lines that make the loop a loop. Without the first one the model
+    # writes a plan in prose; without the last it calls one more tool forever.
+    "Working in steps:\n"
+    "- You may call ONE tool, see what happened, and then call another. Do not try "
+    "to do a whole task in a single call.\n"
+    "- A line beginning [tool result] is what actually happened. It is the truth, "
+    "even when it is not what you asked for. React to it rather than repeating "
+    "yourself.\n"
+    "- DRY RUN in a result means nothing really changed. That is expected. Do not "
+    "run it again to check.\n"
+    "- When there is nothing left to call, stop calling tools and say one short "
+    "sentence about what happened."
 )
 
 
@@ -102,6 +114,16 @@ class FakeLLM:
 
     Deliberately dumb: a test that wants "utterance X produces tool call Y"
     should say so directly, not encode it in a fake's matching rules.
+
+    ONE RULE ABOUT RUNNING OUT, and it exists because the loop is now an agent
+    loop that asks again after every step. A fake that was given a SCRIPT and
+    has finished it returns an empty turn -- no text, no calls -- which is how
+    a real model says "I am done". Falling back to `default` there would make
+    every scripted test end with an unrelated sentence spoken aloud, or, when
+    `default` carries a tool call, run that call until a budget stopped it. A
+    fake with no script at all still answers `default` forever, because that is
+    the "there is no model key" stand-in from `build_llm` and it is supposed to
+    say the same thing every time.
     """
 
     turns: list[LLMTurn] = field(default_factory=list)
@@ -109,6 +131,12 @@ class FakeLLM:
     # Every (messages, spec names) pair seen, so a test can assert the router's
     # narrowing actually reached the model.
     seen: list[tuple[list[Mapping[str, str]], list[str]]] = field(default_factory=list)
+    # Set once, at construction: `turns` is emptied as it is consumed, so by the
+    # time it matters there is no other way to tell a spent script from no script.
+    scripted: bool = field(init=False, default=False)
+
+    def __post_init__(self) -> None:
+        self.scripted = bool(self.turns)
 
     def respond(
         self,
@@ -118,7 +146,7 @@ class FakeLLM:
         self.seen.append(([dict(m) for m in messages], [s.name for s in specs]))
         if self.turns:
             return self.turns.pop(0)
-        return self.default
+        return LLMTurn() if self.scripted else self.default
 
 
 class DeepSeekLLM:

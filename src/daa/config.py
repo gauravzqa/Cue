@@ -32,6 +32,16 @@ class Settings:
     enable_browser: bool = False
     enable_computer_use: bool = False
 
+    # The agent loop's bounds. daa asks, runs ONE step, feeds the result back
+    # and asks again; without these it would do that until the model got bored.
+    # Eight steps is enough for "open the page, find the control, press it,
+    # check it took" with room for one recovery, and short enough that a model
+    # stuck in a rut costs the user seconds rather than minutes. The wall clock
+    # is the one that catches a step that BLOCKS -- a confirmation nobody
+    # answers, a page that never loads -- which the step count never sees.
+    agent_max_steps: int = 8
+    agent_max_seconds: float = 45.0
+
     # Grants and jobs. Short on purpose -- a grant is a bounded bargain, and
     # the cheapest way for one to become blanket permission is to outlive the
     # situation the user was picturing when they agreed to it.

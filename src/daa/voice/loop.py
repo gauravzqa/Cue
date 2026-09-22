@@ -119,6 +119,24 @@ _UNDO_UNVERIFIED = (
     "You'll want to reverse that one yourself."
 )
 _UNDO_REASON = "That came from the undo journal on disk rather than from you, so I'm checking."
+# THE AGENT LOOP'S THREE WAYS TO STOP EARLY. All three are SPOKEN.
+#
+# A loop that runs out of budget and goes quiet is indistinguishable from one
+# that crashed, and the user's next move -- say it again, louder -- is the
+# worst one. Each sentence says what stopped it and hands the turn back.
+_STEPS_SPENT = (
+    "I've taken that as far as I should without checking with you. "
+    "Tell me to carry on if you want more."
+)
+_TIME_SPENT = (
+    "That's taking longer than I should keep going on my own. "
+    "Tell me to carry on if you want more."
+)
+_REPEATED = (
+    "I tried the same thing twice in a row, so I've stopped rather than go round again."
+)
+_STOP_SENTENCE = {"steps": _STEPS_SPENT, "time": _TIME_SPENT, "repeat": _REPEATED}
+
 # Said when a rollback is refused or has nothing left it can honestly reverse.
 _ROLLBACK_NOTHING = "There's nothing from that stretch I can put back."
 _ROLLBACK_REASON = "That's undoing a whole stretch of work, so I'm checking."
@@ -164,6 +182,11 @@ class TurnOutcome:
     # before the safety layer had an opinion, so "Sure." after "Okay, leaving
     # it." is the assistant agreeing to what it has just declined.
     handled_calls: int = 0
+    # Steps the agent loop actually took this turn, and why it stopped early
+    # ("", "steps", "time" or "repeat"). `steps` counts tool calls the loop
+    # took responsibility for, which is the number the budget bounds.
+    steps: int = 0
+    stopped: str = ""
 
     @property
     def ran_anything(self) -> bool:
@@ -536,19 +559,137 @@ class VoiceLoop:
             synthetic=synthetic,
         )
 
-        turn = self._ask_llm(specs)
-        outcome.reply = turn.text
-
-        # The model may only call what the router put on the menu.
+        # THE AGENT LOOP. ask -> ONE step through the full chain -> feed the
+        # result back -> ask again, until the model stops calling tools or a
+        # budget stops it.
+        #
+        # What is NOT in here is as deliberate as what is:
+        #
+        #   The ROUTER RAN ONCE, above, for the user's utterance -- not once
+        #   per step. `specs` and `allowed` are fixed for the whole turn, so
+        #   the menu cannot widen as the loop goes on, and the router-miss
+        #   escalation in `_handle_call` keeps firing on step six exactly as it
+        #   does on step one. Re-routing per step would cost a Jev call each
+        #   time AND would let a model talk its way onto the menu by taking
+        #   another step first.
+        #
+        #   NO GRANT IS REQUESTED. `request_grant` exists and would let daa ask
+        #   once for a whole plan instead of once per mutation, which is a
+        #   tempting thing to wire up here and a product decision nobody has
+        #   made. Consent fatigue is the documented top risk, and the cure for
+        #   it is not "ask less often about more". Every mutating step still
+        #   asks for itself; read-only steps stay SILENT and interrupt nobody.
         allowed = frozenset(outcome.activated)
-        for call in turn.tool_calls:
-            self._handle_call(call, utterance, outcome, allowed=allowed)
+        max_steps = max(1, int(getattr(self.settings, "agent_max_steps", 8) or 1))
+        max_seconds = float(getattr(self.settings, "agent_max_seconds", 45.0) or 0.0)
+        started = self.now()
+        # The repetition stop. The same tool with the same args twice in a row
+        # is not progress, it is a model that did not believe the result -- the
+        # signature failure of a dry run, where nothing changes however many
+        # times you press. Compared against the PREVIOUS step only: a genuine
+        # plan may well click twice, just not identically and consecutively.
+        previous: tuple[str, str] | None = None
 
-        # Speak the model's words only when we did not take a tool call off its
-        # hands. The model wrote that sentence before policy had an opinion, so
-        # speaking it after a refusal makes us agree to what we just declined.
-        if turn.text and not outcome.handled_calls:
-            self._say(turn.text, outcome)
+        while True:
+            turn = self._ask_llm(specs)
+            outcome.reply = turn.text
+            if not turn.tool_calls:
+                # Nothing left to call. THIS is the sentence worth speaking:
+                # the model wrote it having seen what actually happened, which
+                # is the whole point of feeding results back.
+                if turn.text:
+                    self._say(turn.text, outcome)
+                break
+            for call in turn.tool_calls:
+                if outcome.steps >= max_steps:
+                    outcome.stopped = "steps"
+                elif max_seconds > 0 and self.now() - started >= max_seconds:
+                    outcome.stopped = "time"
+                elif _call_key(call) == previous:
+                    outcome.stopped = "repeat"
+                if outcome.stopped:
+                    break
+                previous = _call_key(call)
+                outcome.steps += 1
+                self._step(call, utterance, outcome, allowed=allowed)
+            # A turn that CALLED a tool wrote its sentence before policy had an
+            # opinion, so it is not spoken -- "Sure, done!" after "Okay,
+            # leaving it." is the assistant agreeing to what it just declined.
+            # The next pass gets to write a better one.
+            if outcome.stopped:
+                break
+
+        if outcome.stopped:
+            self._emit("agent_stopped", reason=outcome.stopped, steps=outcome.steps)
+            self._say(_STOP_SENTENCE[outcome.stopped], outcome)
+
+    def _step(
+        self,
+        call: ToolCall,
+        utterance: str,
+        outcome: TurnOutcome,
+        *,
+        allowed: frozenset[str],
+    ) -> None:
+        """One step: the full chain, then the result back into the transcript.
+
+        THE RESULT IS BUILT FROM WHAT DAA SAID AND WHAT THE TOOL RETURNED, and
+        that is the privacy design rather than an implementation detail. Two
+        cases, and nothing else reaches the model:
+
+        1. The tool produced a `ToolResult`. Its `summary` goes back -- the
+           sentence the tool WROTE TO BE SPOKEN, which at ANNOUNCE the user has
+           just heard -- along with the shape of `data` (see
+           `transcript.shape_data`). `data` itself does not: `read_page`'s page
+           text, `ui_describe`'s labels and `get_clipboard`'s clipboard all
+           live there, and shipping them to DeepSeek would quietly turn every
+           read-only tool into `summarise_page` without the announcement that
+           tool exists to make.
+
+        2. Nothing ran -- a refusal, a declined confirmation, an action that
+           resolved to nothing. Then what daa SAID during the step is the
+           result, verbatim, because those sentences are already addressed to
+           the user and are exactly what the model has to react to. "I won't do
+           that", "Okay, leaving it" and "I could not find the ok button" are
+           the three recoveries worth having.
+        """
+        before_results = len(outcome.results)
+        before_spoken = len(outcome.spoken)
+        self._handle_call(call, utterance, outcome, allowed=allowed)
+        result = outcome.results[-1] if len(outcome.results) > before_results else None
+        if result is not None:
+            status = "ok" if result.ok else "failed"
+            summary = result.summary or result.error or ""
+            data: Mapping[str, Any] = result.data or {}
+            # Only a step that REACHED the tool can have been a dry run; a
+            # refusal was not "dry", it was declined, and saying otherwise
+            # would invite a retry with dry run off.
+            dry = bool(getattr(self.settings, "dry_run", False))
+        else:
+            status = "blocked"
+            summary = " ".join(outcome.spoken[before_spoken:]).strip()
+            data = {}
+            dry = False
+        written = self.transcript.add_tool_result(
+            tool=call.name,
+            status=status,
+            summary=summary or "Nothing happened.",
+            data=data,
+            dry_run=dry,
+        )
+        # Intermediate steps are VISIBLE. The heavy lifting is already done by
+        # the events `_handle_call` and `_execute` emit -- judgment,
+        # disposition, execution/dry_run, refused, spoke -- which the dock
+        # already renders; this row is the one that says where in the plan we
+        # are, and how much went back to the model.
+        self._emit(
+            "agent_step",
+            step=outcome.steps,
+            tool=call.name,
+            status=status,
+            dry_run=dry,
+            fed_back_chars=len(written.text),
+        )
 
     def _ask_llm(self, specs: Sequence[ToolSpec]) -> LLMTurn:
         if self.llm is None:
@@ -1916,6 +2057,21 @@ class _AlwaysWake:
 class _NeverWake(_AlwaysWake):
     wake = False
     addressed_p = 0.0
+
+
+def _call_key(call: ToolCall) -> tuple[str, str]:
+    """A comparable identity for a tool call, for the repetition stop.
+
+    Args are normalised through sorted repr rather than compared as mappings so
+    that {"a": 1, "b": 2} and {"b": 2, "a": 1} are the same call -- a model
+    that reorders its own arguments has still not made any progress.
+    """
+    args = call.args or {}
+    try:
+        body = repr(sorted((str(k), repr(v)) for k, v in dict(args).items()))
+    except Exception:  # noqa: BLE001 -- an unsortable arg blob is still a blob
+        body = repr(args)
+    return (str(call.name), body)
 
 
 def _system_prompt() -> str:

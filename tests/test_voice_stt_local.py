@@ -512,7 +512,14 @@ def test_file_audio_through_vad_whisper_gate_and_loop(speech, local):
     )
 
     assert wake.woke is True
-    assert len(llm.seen) == 1, "the model saw more (or less) than the woken utterance"
+    # The agent loop asks again after every step, so the count is no longer 1 --
+    # what this assertion was always about is WHICH utterance reached the model.
+    # The overheard one must not appear in any ask, on any step.
+    assert llm.seen, "the model never saw the woken utterance"
+    assert any("open safari" in str(m).lower() for m in llm.seen[0][0])
+    assert not any(
+        "ship it on friday" in str(m).lower() for ask in llm.seen for m in ask[0]
+    ), "unaddressed speech reached the conversational model"
     # dry_run: the loop resolved the action, cleared policy, and stopped short
     # of the tool -- which is the loop's decision, not the transcriber's.
     assert tool.resolves == [{"name": "Safari"}]
