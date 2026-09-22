@@ -100,3 +100,33 @@ def _no_network(request, monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", _guard)
     monkeypatch.setattr(socket.socket, "connect_ex", _guard_ex)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_app_activation(request, monkeypatch):
+    """No unit test may bring a real application to the front.
+
+    Computer-use tools now activate the target app and confirm it is frontmost
+    before sending a single keystroke. In a unit test the pids come from fake
+    trees, so the real activation could at best fail slowly and at worst raise
+    some unrelated app over the user's work. Replace it with a model in which
+    activating a pid makes it frontmost, instantly. A test that wants the
+    failure path overrides `activate` or `frontmost_pid` itself.
+
+    The live suite drives a real AppKit window and models activation in its
+    own fixture, so it is left alone here.
+    """
+    if "test_computer_live" in request.node.nodeid:
+        return
+    try:
+        import daa.tools.computer.tools as tools_mod
+    except Exception:  # noqa: BLE001 -- the package may be absent on a bare clone
+        return
+    front: dict[str, object] = {"pid": None}
+
+    def _activate(pid: object) -> bool:
+        front["pid"] = int(pid)  # type: ignore[arg-type]
+        return True
+
+    monkeypatch.setattr(tools_mod, "activate", _activate)
+    monkeypatch.setattr(tools_mod, "frontmost_pid", lambda: front["pid"])

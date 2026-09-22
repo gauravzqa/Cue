@@ -44,7 +44,6 @@ from ax_fixture import (
     APP_NAME,
     MENU_ITEM,
     FixtureApp,
-    frontmost_pid,
     install,
 )
 from daa.config import Settings
@@ -356,21 +355,20 @@ def test_ui_type_really_changes_the_field(live, fx, settings_window):
     assert live.transport.typed_text() == text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: ui_type sets AXFocused inside the target app and then posts "
-        "keystrokes at the HID tap, which delivers them to whichever app is "
-        "FRONTMOST. Nothing makes the target app frontmost, and setting AXFocused "
-        "does not activate it -- so outside this fixture the text goes to the app "
-        "the user is looking at, not the field the readback named. The fixture "
-        "only succeeds because its transport delivers in-process."
-    ),
-)
 def test_ui_type_makes_the_named_app_the_one_that_receives_keystrokes(live, fx, settings_window):
+    """Keystrokes go to the FRONTMOST app, not to the named element, so daa
+    must bring the named app forward -- and it must do so BEFORE the first key.
+
+    The fixture never really becomes active (it would steal the user's focus),
+    so activation is modelled and recorded; `test_computer_front.py` covers the
+    refusal paths without AppKit at all."""
     tool = UiType(LIVE)
-    tool.run(tool.resolve(text="x", target="nickname", app=APP_NAME))
-    assert frontmost_pid() == os.getpid()
+    result = tool.run(tool.resolve(text="x", target="nickname", app=APP_NAME))
+    assert result.ok, result
+    assert live.activations, "nothing asked for the named app to come forward"
+    pid, keys_before = live.activations[0]
+    assert pid == os.getpid(), "brought the wrong process forward"
+    assert keys_before == 0, "a keystroke was delivered before the app was in front"
 
 
 # ---------------------------------------------------------------------------
@@ -388,20 +386,14 @@ def test_ui_key_builds_a_real_combination_that_fires_a_key_equivalent(live, fx, 
     assert fx.target.hits == ["Kick"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: ui_key's readback promises 'this will bring <app> to the front', "
-        "but run() only posts the key at the HID tap; nothing activates the app. "
-        "The keystroke goes to whatever is frontmost."
-    ),
-)
 def test_ui_key_brings_the_app_to_the_front_as_its_readback_says(live, fx, settings_window):
     tool = UiKey(LIVE)
     action = tool.resolve(keys="command k", app=APP_NAME)
     assert action.consequences["focus"] == f"this will bring {APP_NAME} to the front"
-    tool.run(action)
-    assert frontmost_pid() == os.getpid()
+    result = tool.run(action)
+    # The readback promised it; run() must now actually do it, first.
+    assert result.ok, result
+    assert live.activations and live.activations[0] == (os.getpid(), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -488,16 +480,6 @@ def test_ui_sequence_refuses_a_bound_step_into_a_real_secure_field(live, fx, set
     assert fx.target.hits == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: a deferred typing step guards against a password field by "
-        "reading the SYSTEM-WIDE focused element. Without an Accessibility grant "
-        "that read is -25211, focused_element() returns None, and the guard "
-        "(`current is not None and current.is_secure`) fails OPEN and types. It "
-        "should refuse when it cannot tell what has the cursor."
-    ),
-)
 def test_a_deferred_type_step_refuses_when_a_real_password_field_has_the_cursor(
     live, fx, settings_window
 ):

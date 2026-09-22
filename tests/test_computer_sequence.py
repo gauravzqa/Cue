@@ -212,7 +212,10 @@ def test_a_successful_plan_reports_how_many_steps_it_did(monkeypatch):
     monkeypatch.setattr(tools_mod, "press", lambda element: (True, ""))
     monkeypatch.setattr(tools_mod, "post_key", lambda code, flags: (True, ""))
     monkeypatch.setattr(tools_mod, "type_text", lambda text, **kw: (True, ""))
-    monkeypatch.setattr(tools_mod, "focused_element", lambda: None)
+    # A KNOWN, ordinary field has the cursor. This used to be `lambda: None`
+    # -- "I cannot tell what has the cursor" -- and expected typing to go
+    # ahead, which is the fail-open bug encoded as a passing test.
+    monkeypatch.setattr(tools_mod, "focused_element", lambda: field("File name"))
     _serve(tree(el("Save")), monkeypatch=monkeypatch)
     tool = UiSequence(LIVE)
     result = tool.run(
@@ -227,6 +230,26 @@ def test_a_successful_plan_reports_how_many_steps_it_did(monkeypatch):
     )
     assert result.ok and result.data["steps_done"] == 3
     assert result.undo is None
+
+
+def test_a_deferred_typing_step_stops_when_it_cannot_tell_what_has_the_cursor(monkeypatch):
+    """Unknown is never safe. Without an Accessibility grant the focused-
+    element read returns nothing every time, so a guard that only refuses a
+    KNOWN password field never refuses anything at all."""
+    typed: list[str] = []
+    monkeypatch.setattr(tools_mod, "press", lambda element: (True, ""))
+    monkeypatch.setattr(tools_mod, "type_text", lambda text, **kw: (typed.append(text), (True, ""))[1])
+    monkeypatch.setattr(tools_mod, "focused_element", lambda: None)
+    _serve(tree(el("Save")), monkeypatch=monkeypatch)
+    tool = UiSequence(LIVE)
+    result = tool.run(tool.resolve(
+        app="TextEdit",
+        steps=[{"action": "click", "target": "save"},
+               {"action": "type", "text": "hunter2", "target": "file name"}],
+    ))
+    assert not result.ok
+    assert typed == [], "typed into an unknown field"
+    assert "couldn't tell" in result.summary.lower()
 
 
 def test_a_deferred_typing_step_checks_what_has_the_cursor_first(monkeypatch):

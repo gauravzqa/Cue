@@ -37,10 +37,12 @@ from daa.tools.base import BaseTool, Degraded, as_sentence, param, rank_candidat
 from daa.tools.computer.ax import (
     Element,
     Snapshot,
+    activate,
     click_center,
     find_by_identity,
     focus,
     focused_element,
+    frontmost_pid,
     modifier_mask,
     post_key,
     press,
@@ -224,6 +226,42 @@ def _effect(before: Element, after: Element | None) -> str:
 # ---------------------------------------------------------------------------
 # ui_describe -- the only read
 # ---------------------------------------------------------------------------
+
+
+# How long to wait for an activation request to take effect. Short, and a
+# module attribute so tests can make it instant: an unbounded or long wait here
+# is exactly what hung an earlier attempt at this fix, because a test process
+# that is never allowed to become frontmost makes every call wait the maximum.
+ACTIVATE_WAIT_S = 0.5
+_ACTIVATE_POLL_S = 0.02
+_sleep = time.sleep
+_now = time.monotonic
+
+
+def _bring_to_front(pid: object, app: str) -> str | None:
+    """Make `pid` frontmost and CONFIRM it, or return why not.
+
+    Keystrokes are delivered to the frontmost app, not to the element that
+    was named, so this is what makes the readback's "in <app>" true. Returns
+    None when the app is confirmed frontmost, else a spoken reason -- and the
+    caller must then send nothing. An unknown pid, a failed activation, or a
+    frontmost app we cannot read all refuse: we never type into an app we
+    could not confirm is the one receiving the keystrokes.
+    """
+    try:
+        want = int(pid)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return f"I couldn't tell which process {app} is, so I didn't type anything"
+    if frontmost_pid() == want:
+        return None
+    activate(want)
+    deadline = _now() + max(0.0, ACTIVATE_WAIT_S)
+    while True:
+        if frontmost_pid() == want:
+            return None
+        if _now() >= deadline:
+            return f"I couldn't bring {app} to the front, so I didn't type anything"
+        _sleep(_ACTIVATE_POLL_S)
 
 
 class UiDescribe(_UiTool):
@@ -580,6 +618,9 @@ class UiType(_UiTool):
                 "That turned into a password field, so I stopped.",
                 "the element is now a secure text field",
             )
+        refusal = _bring_to_front(element.pid, element.app)
+        if refusal is not None:
+            return self.failed(as_sentence(refusal), "target app not confirmed frontmost")
         ok, detail = focus(element)
         if not ok:
             return Degraded(
@@ -693,6 +734,10 @@ class UiKey(_UiTool):
             return self.dry(f"I would press {label}.", app=action.args.get("app_name"))
         keycode = int(action.args.get("keycode") or 0)
         modifiers = list(action.args.get("modifiers") or [])
+        app_name = str(action.args.get("app_name") or "that app")
+        refusal = _bring_to_front(action.args.get("pid"), app_name)
+        if refusal is not None:
+            return self.failed(as_sentence(refusal), "target app not confirmed frontmost")
         ok, detail = post_key(keycode, modifier_mask(modifiers))
         if not ok:
             return Degraded("ui_key", f"I could not press {label}.", detail).as_result(
@@ -870,7 +915,8 @@ class UiSequence(_UiTool):
         consequences["undo"] = UNDO_CONSEQUENCE
         return ResolvedAction(
             tool=self.spec.name,
-            args={"app": app, "app_name": snap.app, "steps": plan, "requested_steps": steps},
+            args={"app": app, "app_name": snap.app, "pid": snap.pid, "steps": plan,
+                  "requested_steps": steps},
             # One target, not one per step: `_targets_phrase` collapses a list
             # of four or more into "and N more", and a plan the user only half
             # hears is a plan they did not agree to.
@@ -896,6 +942,12 @@ class UiSequence(_UiTool):
         done = 0
         for index, step in enumerate(plan, start=1):
             kind = str(step.get("action") or "")
+            if kind in ("type", "key"):
+                # Re-confirmed before EVERY keystroke step, not once up front:
+                # an earlier click may have opened another app or sheet.
+                refusal = _bring_to_front(action.args.get("pid"), app)
+                if refusal is not None:
+                    return self._stopped(done, index, refusal, app)
             if kind == "click" or (kind == "type" and step.get("bound")):
                 snap = self._snapshot(app, step.get("window") or None)
                 if snap.degraded is not None:
@@ -926,7 +978,16 @@ class UiSequence(_UiTool):
                 # A deferred typing step goes wherever the cursor is, so what
                 # has the cursor is checked before a single character is sent.
                 current = focused_element()
-                if current is not None and current.is_secure:
+                # "I cannot tell what has the cursor" is NOT "it is not a
+                # password field". Without an Accessibility grant this read
+                # returns nothing every single time, and the old guard --
+                # `current is not None and current.is_secure` -- read that as
+                # safe and typed. Unknown is never safe.
+                if current is None:
+                    return self._stopped(
+                        done, index, "I couldn't tell what has the cursor, so I stopped", app
+                    )
+                if current.is_secure:
                     return self._stopped(
                         done, index, "a password field had the cursor, so I stopped", app
                     )

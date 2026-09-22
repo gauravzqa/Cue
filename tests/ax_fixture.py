@@ -491,6 +491,10 @@ class Live:
     fx: FixtureApp
     transport: InProcessEventTransport
     recorder: RecordingAX
+    # Every activation daa requested, as (pid, keystrokes delivered so far).
+    # The second number is what lets a test prove ORDER: our pid was brought
+    # forward before a single key reached it.
+    activations: list[tuple[int, int]] = field(default_factory=list)
 
     @property
     def app_info(self) -> ax.AppInfo:
@@ -505,7 +509,26 @@ def install(monkeypatch: Any, fx: FixtureApp) -> Live:
     monkeypatch.setattr(ax, "running_apps", lambda: [info])
     monkeypatch.setattr(ax, "_api", lambda: recorder)
     monkeypatch.setattr(ax, "_quartz", lambda: transport)
-    return Live(fx=fx, transport=transport, recorder=recorder)
+    live = Live(fx=fx, transport=transport, recorder=recorder)
+
+    # Activation, modelled. The fixture must never really become the active
+    # app -- it would take focus from the user's work -- so daa's request to
+    # bring it forward is RECORDED and honoured here instead. Without this the
+    # tools' confirm-frontmost check refuses every keystroke, correctly, and
+    # an earlier attempt at this fix hung waiting for an activation the
+    # fixture is designed never to perform.
+    import daa.tools.computer.tools as tools_mod
+
+    front: dict[str, int | None] = {"pid": None}
+
+    def _activate(pid: int) -> bool:
+        live.activations.append((int(pid), len(transport.delivered)))
+        front["pid"] = int(pid)
+        return True
+
+    monkeypatch.setattr(tools_mod, "activate", _activate)
+    monkeypatch.setattr(tools_mod, "frontmost_pid", lambda: front["pid"])
+    return live
 
 
 def frontmost_pid() -> int:

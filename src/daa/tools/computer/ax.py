@@ -1068,3 +1068,39 @@ __all__ = [
     "type_text",
     "wants_manual_accessibility",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Which app receives keystrokes
+#
+# Synthetic keystrokes are posted at the HID tap and delivered to the FRONTMOST
+# app's focused element -- not to whatever element was named. Setting AXFocused
+# inside a background app moves its cursor but does not make it frontmost, so
+# without these two, ui_type put the cursor in the named field and then typed
+# into whatever the user happened to be looking at.
+# ---------------------------------------------------------------------------
+
+
+def frontmost_pid() -> int | None:
+    """The pid that would receive a keystroke right now, or None if unknown."""
+    try:
+        from AppKit import NSWorkspace
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return int(app.processIdentifier()) if app is not None else None
+    except Exception:  # noqa: BLE001 -- unknown, and callers treat unknown as "no"
+        return None
+
+
+def activate(pid: int) -> bool:
+    """Ask for `pid` to become frontmost. A request, not a guarantee -- the
+    caller must confirm with `frontmost_pid()` before sending anything."""
+    try:
+        from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(pid))
+        if app is None:
+            return False
+        return bool(app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
+    except Exception:  # noqa: BLE001
+        return False
