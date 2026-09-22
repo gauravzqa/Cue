@@ -68,8 +68,27 @@ def _in(label: str, kind: str, window: str = WINDOW) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _screen_is_locked() -> bool:
+    try:
+        import Quartz
+
+        d = Quartz.CGSessionCopyCurrentDictionary() or {}
+        return bool(d.get("CGSSessionScreenIsLocked", 0))
+    except Exception:  # noqa: BLE001 -- unknown is not locked; let the suite speak
+        return False
+
+
 @pytest.fixture(scope="session")
 def fx():
+    # While the screen is locked, macOS does not publish this process's
+    # windows to Accessibility: kAXWindowsAttribute answers with the
+    # application element itself and nothing beneath it is a window. Every
+    # test then fails with a misleading "could not find" -- 21 of them, all
+    # pointing away from the real cause. That cost three agent runs before
+    # anyone checked. Skip, and say why.
+    if _screen_is_locked():
+        pytest.skip("the screen is locked, so macOS hides the fixture's windows from "
+                    "Accessibility; unlock it and run this suite again")
     app = FixtureApp.shared()
     yield app
     app.close_all()
@@ -296,17 +315,6 @@ def test_delete_account_in_a_real_alert_reads_back_as_destructive(live, fx, dele
     assert result.data["effect"] == "suspected_noop"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: a real NSAlert sheet is an AXSheet CHILD of the window. The walk "
-        "computes in_alert per element (only the AXSheet node itself matches) and "
-        "does not propagate it to descendants, and it reads AXDefaultButton only "
-        "from the window, while the sheet carries its own. So buttons in a real "
-        "alert sheet get in_alert=False and is_default_button=False; a "
-        "non-destructive default ('Continue') gets no CONFIRM_VISUAL hint."
-    ),
-)
 def test_buttons_inside_a_real_alert_sheet_are_known_to_be_in_an_alert(live, fx):
     win = fx.window(WINDOW)
     win.show()
@@ -647,19 +655,6 @@ def test_the_menu_bar_walk_reaches_the_system_apple_menu(live, fx, settings_wind
     assert all(el.window_title == "" and el.app == APP_NAME for el in items)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: the Apple menu's system items are ordinary candidates. "
-        "ui_click(target='lock screen', app=<any Cocoa app>) resolves to "
-        "'the Lock Screen menu item in <app>' -- a whole-machine action read back "
-        "as an action inside that app -- with no floor hint, because 'lock', "
-        "'restart', 'shut down' and 'force quit' are not in the destructive "
-        "lexicon. keys.DENIED_COMBOS refuses the keyboard route to the same "
-        "actions (command-control-Q); the menu route is open. The walk should skip "
-        "the first AXMenuBarItem."
-    ),
-)
 def test_system_apple_menu_items_are_not_pressable_candidates(live, fx, settings_window):
     snap = _warm_apple_menu(fx)
     labels = {el.label for el in _apple_menu_items(snap)}
@@ -672,15 +667,6 @@ def test_system_apple_menu_items_are_not_pressable_candidates(live, fx, settings
     assert action.targets == () or action.floor_hint == RiskTier.CONFIRM_VISUAL
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: ui_describe returns every Apple-menu item as a control of the "
-        "named app, which puts the user's Recent Items (file and folder names) and "
-        "their full name ('Log Out <name>…') into the model's context -- the exact "
-        "class of content the no-AXValue rule exists to keep out."
-    ),
-)
 def test_ui_describe_does_not_list_the_system_apple_menu(live, fx, settings_window):
     _warm_apple_menu(fx)
     tool = UiDescribe(LIVE)

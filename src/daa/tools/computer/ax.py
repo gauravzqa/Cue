@@ -92,6 +92,9 @@ CLICKABLE_ROLES = frozenset(
 # Window subroles that mean "this is a modal the user is being asked to answer".
 ALERT_SUBROLES = frozenset({"AXDialog", "AXSystemDialog", "AXSystemFloatingWindow"})
 ALERT_ROLES = frozenset({"AXSheet", "AXAlert"})
+# Roles that can appear in a window list or a window subtree but are not part
+# of any window. See the cycle note in snapshot().
+_NOT_IN_A_WINDOW = frozenset({"AXApplication", "AXMenuBar"})
 
 # Bundle ids that mean the window belongs to macOS itself rather than to an app
 # the user launched. A press inside one of these is a press on a permission or
@@ -607,7 +610,7 @@ def snapshot(
     visited = 0
     truncated = False
 
-    for w_index, win in enumerate(windows or []):
+    for w_index, win in enumerate(_real_windows(api, windows or [])):
         if visited >= max_nodes or time.monotonic() > deadline:
             truncated = True
             break
@@ -620,18 +623,31 @@ def snapshot(
         derr, default_button = _copy(api, win, api.kAXDefaultButtonAttribute)
         default_identity = default_button if derr == AX_SUCCESS else None
 
-        stack: list[tuple[Any, int, tuple[int, ...]]] = [(win, 0, (w_index,))]
+        # Alert context is INHERITED. A real NSAlert sheet is an AXSheet child
+        # of its window, so "is this button in an alert" is a property of its
+        # ancestry, not of the button: computing it per node marked only the
+        # sheet itself, and every button inside a real alert read back as an
+        # ordinary button. The default button likewise belongs to the sheet,
+        # not the window -- reading it off the window missed it entirely.
+        stack: list[tuple[Any, int, tuple[int, ...], bool, Any]] = [
+            (win, 0, (w_index,), in_alert, default_identity)
+        ]
         while stack:
             if visited >= max_nodes or time.monotonic() > deadline:
                 truncated = True
                 break
-            ref, depth, path = stack.pop()
+            ref, depth, path, alert_here, default_here = stack.pop()
             visited += 1
+            if depth > 0 and _is_alert_container(api, ref):
+                alert_here = True
+                serr, sheet_default = _copy(api, ref, api.kAXDefaultButtonAttribute)
+                if serr == AX_SUCCESS and sheet_default is not None:
+                    default_here = sheet_default
             element = _element(
                 api, ref, app=app, depth=depth, path=path,
                 window_title=w_title, window_subrole=w_subrole,
-                in_alert=in_alert or (depth > 0 and _is_alert_container(api, ref)),
-                default_identity=default_identity,
+                in_alert=alert_here,
+                default_identity=default_here,
             )
             if depth > 0 and element.label:
                 collected.append(element)
@@ -642,7 +658,16 @@ def snapshot(
             if cerr != AX_SUCCESS or not children:
                 continue
             for c_index, child in reversed(list(enumerate(children))):
-                stack.append((child, depth + 1, (*path, c_index)))
+                # A window's subtree never legitimately contains the
+                # application or its menu bar. Some processes expose exactly
+                # that -- the app listed as one of its own windows, with itself
+                # as a child -- and without this the walk descends app -> app
+                # -> app until the depth or node cap, spending the whole budget
+                # on a cycle and hiding every real control. The menu bar has
+                # its own root and its own budget below.
+                if _copy_str(api, child, api.kAXRoleAttribute) in _NOT_IN_A_WINDOW:
+                    continue
+                stack.append((child, depth + 1, (*path, c_index), alert_here, default_here))
 
     # The menu bar is not a window, so it is a separate root -- and it gets its
     # own node budget rather than sharing one, because a big menu bar would
@@ -673,7 +698,19 @@ def snapshot(
                 cerr, children = _copy(api, ref, api.kAXChildrenAttribute)
                 if cerr != AX_SUCCESS or not children:
                     continue
-                for c_index, child in reversed(list(enumerate(children))):
+                items = list(enumerate(children))
+                if depth == 0:
+                    # The first menu-bar item of every Cocoa app is the Apple
+                    # menu, which is not that app's at all: Lock Screen,
+                    # Restart, Shut Down, Log Out <full name>, Force Quit, and
+                    # Recent Items (the user's file and folder names). Offering
+                    # it made "lock screen" resolve to "the Lock Screen menu
+                    # item in Safari" -- a whole-machine action read back as an
+                    # in-app one -- and put private names in the model's
+                    # context. Identified by POSITION, never by title: titles
+                    # are localised, and the menu has no stable identifier.
+                    items = items[1:]
+                for c_index, child in reversed(items):
                     stack.append((child, depth + 1, (*path, c_index)))
 
     elapsed = (time.monotonic() - started) * 1000.0
@@ -698,6 +735,32 @@ def snapshot(
         nodes_visited=visited, elapsed_ms=elapsed, manual_accessibility_set=manual_set,
     )
 
+
+
+def _real_windows(api: Any, listed: Any) -> list[Any]:
+    """The window list as it should have been: windows, never the application.
+
+    Some processes answer kAXWindowsAttribute with the APPLICATION element
+    rather than its windows, and the application's children include itself.
+    The old walk only worked there by accident -- it descended into the app,
+    reached the real windows among its children, and got to them before the
+    app -> app -> app self-loop used up the node budget. Unwrap it instead:
+    an application entry is replaced by its own window children, one level,
+    with anything that is not part of a window dropped.
+    """
+    out: list[Any] = []
+    for entry in listed:
+        role = _copy_str(api, entry, api.kAXRoleAttribute)
+        if role not in _NOT_IN_A_WINDOW:
+            out.append(entry)
+            continue
+        if role != "AXApplication":
+            continue
+        err, kids = _copy(api, entry, api.kAXChildrenAttribute)
+        if err != AX_SUCCESS or not kids:
+            continue
+        out.extend(k for k in kids if _copy_str(api, k, api.kAXRoleAttribute) not in _NOT_IN_A_WINDOW)
+    return out
 
 def _is_alert_container(api: Any, ref: Any) -> bool:
     role = _copy_str(api, ref, api.kAXRoleAttribute)

@@ -81,6 +81,15 @@ DESTRUCTIVE_PHRASES = (
     "delete account",
     "move to trash",
     "turn off",
+    # Whole-machine actions. The walk no longer enters the Apple menu, but a
+    # system action reachable some other way -- a Control Center item, an app
+    # that mirrors them -- must still escalate rather than read back as a
+    # routine press.
+    "lock screen",
+    "shut down",
+    "force quit",
+    "restart",
+    "log out",
 )
 
 _WORD = re.compile(r"[a-z0-9]+")
