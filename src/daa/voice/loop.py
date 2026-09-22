@@ -12,13 +12,39 @@ Control flow for one segment of speech:
            not ended -> buffer and wait for the next segment
       -> cloud STT rescore                 (quality, only now that we're awake)
       -> ToolRouter                        (which few tools are even plausible)
-      -> DeepSeek                          (thinking disabled; activated tools only)
-      -> tool.resolve()                    (concrete targets, still no mutation)
-      -> RiskGate.assess()                 (judgment about the RESOLVED action)
-      -> policy.decide()                   (the only thing that may authorize)
-      -> SILENT: run | ANNOUNCE: run+say | CONFIRM_VOICE: read back, ask
+                                           ONCE per user turn, not once per step
+      -> THE AGENT LOOP, until the model stops calling tools or a budget ends it:
+           -> DeepSeek                     (thinking disabled; activated tools only)
+           -> tool.resolve()               (concrete targets, still no mutation)
+           -> RiskGate.assess()            (judgment about the RESOLVED action)
+           -> policy.decide()              (the only thing that may authorize)
+           -> SILENT: run | ANNOUNCE: run+say | CONFIRM_VOICE: read back, ask
                                            | CONFIRM_VISUAL: print it, type yes
-      -> run -> UndoJournal.record -> the reply, as text
+           -> run -> UndoJournal.record
+           -> Transcript.add_tool_result   (what happened, back to the model)
+      -> the reply, as text
+
+The loop is what lets daa do anything that takes two steps -- open the page,
+find the control, press it, notice it did not work, try the other one. Three
+things bound it, and all three END THE TURN OUT LOUD, because a loop that runs
+out of budget and goes quiet is indistinguishable from one that crashed:
+`Settings.agent_max_steps`, `Settings.agent_max_seconds`, and a hard stop when
+the same tool is called with the same arguments twice in a row.
+
+WHAT A TOOL RESULT MAY CARRY IS THE SHARPEST EDGE IN THIS FILE. Feeding a
+result back is an EGRESS to DeepSeek that the user did not separately agree to,
+and `read_page`, `ui_describe` and `get_clipboard` all return the user's own
+content. So a result carries daa's own SENTENCE about the step -- the one it
+spoke, or the one the tool wrote to be spoken -- plus the SHAPE of
+`ToolResult.data`, and never the data. `summarise_page` is a separate ANNOUNCE
+tool precisely because sending page text somewhere has to be announced; the
+agent loop must not become that tool by the back door. See `_step` and
+`voice/transcript.py::shape_data`.
+
+NO SCOPED GRANT IS REQUESTED BY THE LOOP. `request_grant` and `safety/grant.py`
+exist and would let daa ask once for a whole plan instead of once per action.
+That is a real product decision nobody has made, and consent fatigue is the
+documented top risk, so it stays per-action. See `_act`.
 
 The single most important invariant in this file: `_execute` is the ONLY place
 that calls the tool, and it will not do so without a Disposition object whose
@@ -177,10 +203,13 @@ class TurnOutcome:
     results: list[ToolResult] = field(default_factory=list)
     spoken: list[str] = field(default_factory=list)
     dropped_reason: str = ""
-    # Tool calls we took responsibility for, whether or not they ran. Once this
-    # is non-zero the model's own sentence must not be spoken: it was written
+    # Tool calls we took responsibility for, whether or not they ran. A turn
+    # that called a tool does not get its own sentence spoken: it was written
     # before the safety layer had an opinion, so "Sure." after "Okay, leaving
-    # it." is the assistant agreeing to what it has just declined.
+    # it." is the assistant agreeing to what it has just declined. The rule is
+    # now PER ASK rather than per utterance -- the whole point of the agent
+    # loop is that the model gets asked again, having seen what really
+    # happened, and THAT sentence is the one worth saying out loud.
     handled_calls: int = 0
     # Steps the agent loop actually took this turn, and why it stopped early
     # ("", "steps", "time" or "repeat"). `steps` counts tool calls the loop

@@ -295,9 +295,13 @@ def shape_data(data: Mapping[str, Any] | None) -> dict[str, Any]:
         elif isinstance(value, str):
             if key.lower() not in _SHAPE_STR_KEYS:
                 continue
-            text = _scrub(" ".join(value.split()))
+            # Length is checked on the RAW value, before scrubbing. Scrubbing a
+            # 400-character payload yields "<elided 400 chars>", which is short
+            # -- so checking afterwards would let a long string through the
+            # length rule by being caught by a different one.
+            text = " ".join(value.split())
             if text and len(text) <= _SHAPE_MAX_VALUE_CHARS:
-                out[key] = text
+                out[key] = _scrub(text)
         # None and everything else: dropped. "absent" is not information the
         # model needs and a repr() is a payload wearing a type name.
     return out
