@@ -625,10 +625,18 @@ class VoiceLoop:
             if not turn.tool_calls:
                 # Nothing left to call. THIS is the sentence worth speaking:
                 # the model wrote it having seen what actually happened, which
-                # is the whole point of feeding results back.
+                # is the whole point of feeding results back. A turn that DID
+                # call a tool stays unspoken, because it was written before the
+                # safety layer had an opinion -- "Sure, done!" on top of "Okay,
+                # leaving it." is the assistant agreeing to what it has just
+                # declined. The next pass gets to write a better one.
                 if turn.text:
                     self._say(turn.text, outcome)
                 break
+            # Checked BEFORE each step and never in the middle of one: a step
+            # is synchronous, so the wall clock bounds how long daa keeps
+            # STARTING work, not how long one tool may take. The tools own
+            # their own timeouts and `stop()` owns the interruption.
             for call in turn.tool_calls:
                 if outcome.steps >= max_steps:
                     outcome.stopped = "steps"
@@ -641,10 +649,6 @@ class VoiceLoop:
                 previous = _call_key(call)
                 outcome.steps += 1
                 self._step(call, utterance, outcome, allowed=allowed)
-            # A turn that CALLED a tool wrote its sentence before policy had an
-            # opinion, so it is not spoken -- "Sure, done!" after "Okay,
-            # leaving it." is the assistant agreeing to what it just declined.
-            # The next pass gets to write a better one.
             if outcome.stopped:
                 break
 
