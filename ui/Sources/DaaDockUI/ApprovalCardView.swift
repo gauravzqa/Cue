@@ -23,11 +23,21 @@ struct ApprovalCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(2)
+            Divider()
+            // THE CLAIM, pinned. It sits outside the scroll view on purpose:
+            // the scroll gate makes you scroll to the end of the script, and
+            // when the claim scrolled with it you approved while looking at
+            // `echo step 400`, with "sends a message to Alex" long gone. The
+            // only way to catch a script that does something other than what
+            // daa says is to read the two side by side, so the claim stays on
+            // screen for the entire time the gate is being satisfied.
+            claim
+                .layoutPriority(1)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    headline
-                    flags
                     // Script args FIRST. `_SCRIPT_KEYS` already encodes which
                     // arguments are programs rather than references to them,
                     // and they are the reason this tier exists.
@@ -38,7 +48,8 @@ struct ApprovalCardView: View {
                     if !card.otherArguments.isEmpty { otherArgs }
                     judgment
                 }
-                .padding(22)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             // The scroll gate. Measured against real scroll geometry, not an
@@ -47,6 +58,11 @@ struct ApprovalCardView: View {
             // content that has never been on screen and silently delete the
             // rule. When the content fits, this is true from the first layout
             // and no friction is invented.
+            //
+            // What this proves is that the bottom was ON SCREEN -- a flick or
+            // the End key satisfies it. It does not and cannot prove anyone
+            // read it. What it can guarantee is structural: the claim above
+            // is outside this scroll view, so it is visible the whole time.
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 4
             } action: { _, atBottom in
@@ -54,14 +70,32 @@ struct ApprovalCardView: View {
             }
             Divider()
             footer
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(2)
         }
         .frame(width: 560)
-        .frame(minHeight: 360, maxHeight: 720)
+        // No minimum height: the panel is clamped to the screen
+        // (`PanelPlacement`), and it is the scroll region that gives way.
+        .frame(maxHeight: 720)
         .background(.regularMaterial)
         .opacity(inert ? 0.55 : 1)
         .animation(.easeOut(duration: ApprovalGate.inertFor), value: inert)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("daa needs your approval")
+    }
+
+    /// What daa says it will do: the verb phrase, the message if it sends
+    /// one, and every flag. Never scrolls.
+    private var claim: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            headline
+            if let m = card.messageSpotlight { spotlight(m) }
+            flags
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 16)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - header
@@ -81,26 +115,60 @@ struct ApprovalCardView: View {
                 }
                 Spacer()
             }
-            if card.dryRun { dryRunBanner }
+            // Always present, in both states. A live card used to carry one
+            // FEWER banner than a dry run -- the card that would really act
+            // was the calmer of the two.
+            stakesBanner
         }
         .padding(.horizontal, 22)
         .padding(.top, 18)
         .padding(.bottom, 14)
     }
 
-    /// Otherwise the card teaches people to approve reflexively during
-    /// testing, and they carry the habit into production.
-    private var dryRunBanner: some View {
-        Label {
-            Text("Dry run — approving this will not actually run it.")
-                .font(.callout.weight(.medium))
-        } icon: {
-            Image(systemName: "testtube.2")
+    /// Dry run: otherwise the card teaches people to approve reflexively
+    /// during testing, and they carry the habit into production.
+    /// Live: an affirmative statement that this is real, not the absence of a
+    /// warning. It is the loudest element on the card.
+    @ViewBuilder
+    private var stakesBanner: some View {
+        let st = card.stakes
+        switch st.emphasis {
+        case .calm:
+            Label {
+                Text(st.title)
+                    .font(.callout.weight(.medium))
+            } icon: {
+                Image(systemName: st.symbol)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.blue.opacity(0.35)))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(st.bannerText)
+        case .serious:
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: st.symbol)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Color.red, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(st.title)
+                        .font(.system(size: 16, weight: .bold))
+                    Text(st.detail)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.13), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.red.opacity(0.75), lineWidth: 2))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(st.bannerText)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.blue.opacity(0.35)))
     }
 
     // MARK: - the sentence
@@ -130,7 +198,9 @@ struct ApprovalCardView: View {
             }
             // Omitting these makes the confirmation a lie, which is why the
             // type system makes them hard to drop on the Python side.
-            ForEach(card.consequences, id: \.key) { c in
+            // Most destructive first (`ConsequenceOrder`), minus the one the
+            // message spotlight already shows in full.
+            ForEach(card.flaggedConsequences, id: \.key) { c in
                 flag(c.text, icon: "flag.fill", tone: .red)
             }
             if card.assessment.synthetic {
@@ -138,6 +208,42 @@ struct ApprovalCardView: View {
                      icon: "questionmark.diamond.fill", tone: .purple)
             }
         }
+    }
+
+    /// On a card that sends a message, what is sent and to whom is the most
+    /// important fact on it -- not a small flag line equal to "I inferred
+    /// this". Python's text, verbatim.
+    private func spotlight(_ m: MessageSpotlight) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "message.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                Text("SENDS THIS MESSAGE")
+                    .font(.caption.weight(.bold))
+                    .kerning(0.8)
+                    .foregroundStyle(.secondary)
+                if let to = m.recipient {
+                    Text("TO")
+                        .font(.caption.weight(.bold))
+                        .kerning(0.8)
+                        .foregroundStyle(.secondary)
+                    Text(to)
+                        .font(.system(size: 16, weight: .bold))
+                        .textSelection(.enabled)
+                }
+            }
+            Text(m.body)
+                .font(.system(size: 17, weight: .medium))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.18)))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(m.recipient.map { "Sends this message to \($0): \(m.body)" }
+                            ?? "Sends this message: \(m.body)")
     }
 
     private func flag(_ text: String, icon: String, tone: Color) -> some View {
@@ -301,6 +407,7 @@ struct ApprovalCardView: View {
                 Button("Cancel") { model.resolveApproval(.cancelled) }
                     .keyboardShortcut(.cancelAction)
                 HoldToApproveButton(
+                    stakes: card.stakes,
                     enabled: gate.canApprove(at: now),
                     progress: gate.holdProgress(at: now),
                     onDown: { model.beginHold() },
@@ -319,6 +426,9 @@ struct ApprovalCardView: View {
 /// card that appeared mid-click, or by the Return key at all — there is
 /// deliberately **no default button and no keyboard shortcut on Approve**.
 struct HoldToApproveButton: View {
+    /// A dry-run Approve is low-stakes and looks calm. A live one does not:
+    /// red, heavier, wider, and its label says "for real".
+    let stakes: ApprovalStakes
     let enabled: Bool
     let progress: Double
     let onDown: () -> Void
@@ -326,23 +436,33 @@ struct HoldToApproveButton: View {
 
     @State private var down = false
 
+    private var serious: Bool { stakes.emphasis == .serious }
+    private var tint: Color { serious ? .red : .accentColor }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 7)
-                .fill(Color.accentColor.opacity(enabled ? 0.18 : 0.07))
+                .fill(tint.opacity(enabled ? (serious ? 0.22 : 0.18) : 0.07))
             GeometryReader { geo in
                 RoundedRectangle(cornerRadius: 7)
-                    .fill(Color.accentColor.opacity(0.55))
+                    .fill(tint.opacity(serious ? 0.7 : 0.55))
                     .frame(width: geo.size.width * progress)
             }
             .clipShape(RoundedRectangle(cornerRadius: 7))
-            Text(progress > 0 ? "Keep holding…" : "Approve · hold")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(enabled ? Color.primary : Color.secondary)
+            HStack(spacing: 5) {
+                if serious {
+                    Image(systemName: stakes.symbol)
+                        .foregroundStyle(enabled ? Color.red : Color.secondary)
+                }
+                Text(progress > 0 ? "Keep holding…" : stakes.approveLabel)
+            }
+            .font(serious ? .callout.weight(.bold) : .callout.weight(.medium))
+            .foregroundStyle(enabled ? Color.primary : Color.secondary)
         }
-        .frame(width: 148, height: 26)
+        .frame(width: serious ? 214 : 148, height: serious ? 30 : 26)
         .overlay(RoundedRectangle(cornerRadius: 7)
-            .strokeBorder(Color.accentColor.opacity(enabled ? 0.6 : 0.2)))
+            .strokeBorder(tint.opacity(enabled ? (serious ? 0.9 : 0.6) : 0.2),
+                          lineWidth: serious ? 2 : 1))
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -358,7 +478,7 @@ struct HoldToApproveButton: View {
         )
         .disabled(!enabled)
         .help("Press and hold to approve. A click is not enough, on purpose.")
-        .accessibilityLabel("Approve by holding")
+        .accessibilityLabel(stakes.approveAccessibilityLabel)
         .accessibilityHint("Press and hold for six tenths of a second. A single click will not approve this.")
         .accessibilityValue(enabled ? "available" : "not yet available")
     }

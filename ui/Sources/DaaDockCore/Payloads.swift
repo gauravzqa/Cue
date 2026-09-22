@@ -191,10 +191,13 @@ public struct ApprovalCard: Sendable, Equatable, Identifiable {
     public let targets: [String]
     public let arguments: [ApprovalArgument]
     /// Destructive modifiers the user MUST see, because they change what
-    /// consent means. Sorted by key for a stable render.
+    /// consent means. Most destructive first (`ConsequenceOrder`), not by
+    /// alphabet: "delete" used to render above "unrecoverable" because d < u.
     public let consequences: [(key: String, text: String)]
     public let assessment: RiskSummary
     public let expiresIn: TimeInterval
+    /// `message: {to, body}` when Python sends one. See `MessageSpotlight`.
+    public let explicitMessage: MessageSpotlight?
 
     public static func == (a: ApprovalCard, b: ApprovalCard) -> Bool {
         a.id == b.id && a.tool == b.tool && a.tier == b.tier && a.reason == b.reason
@@ -203,19 +206,22 @@ public struct ApprovalCard: Sendable, Equatable, Identifiable {
             && a.consequences.map(\.key) == b.consequences.map(\.key)
             && a.consequences.map(\.text) == b.consequences.map(\.text)
             && a.assessment == b.assessment && a.expiresIn == b.expiresIn
+            && a.explicitMessage == b.explicitMessage
     }
 
     public init(
         id: String, tool: String, tier: String, reason: String, phrase: String,
         verb: String = "", explicit: Bool, dryRun: Bool, targets: [String],
         arguments: [ApprovalArgument], consequences: [(key: String, text: String)],
-        assessment: RiskSummary, expiresIn: TimeInterval
+        assessment: RiskSummary, expiresIn: TimeInterval,
+        explicitMessage: MessageSpotlight? = nil
     ) {
         self.id = id; self.tool = tool; self.tier = tier; self.reason = reason
         self.phrase = phrase; self.verb = verb; self.explicit = explicit
         self.dryRun = dryRun; self.targets = targets; self.arguments = arguments
         self.consequences = consequences; self.assessment = assessment
         self.expiresIn = expiresIn
+        self.explicitMessage = explicitMessage
     }
 
     /// Returns nil when the frame cannot be rendered honestly.
@@ -255,9 +261,17 @@ public struct ApprovalCard: Sendable, Equatable, Identifiable {
             ($0.isProgram ? 0 : 1, $0.key) < ($1.isProgram ? 0 : 1, $1.key)
         }
 
-        self.consequences = (p["consequences"]?.stringMap ?? [:])
-            .sorted { $0.key < $1.key }
-            .map { (key: $0.key, text: $0.value) }
+        self.consequences = ConsequenceOrder.sorted(
+            p["consequences"]?.stringMap ?? [:],
+            explicitOrder: p["consequenceOrder"]?.stringArray ?? [])
+
+        if let m = p["message"], let body = m["body"]?.stringValue, !body.isEmpty {
+            let to = m["to"]?.stringValue
+            self.explicitMessage = MessageSpotlight(
+                recipient: (to?.isEmpty ?? true) ? nil : to, body: body, consequenceKey: nil)
+        } else {
+            self.explicitMessage = nil
+        }
 
         self.assessment = RiskSummary(p["assessment"])
 
@@ -282,6 +296,7 @@ public struct ApprovalCard: Sendable, Equatable, Identifiable {
         parts += consequences.map { "\($0.key): \($0.text)" }
         parts += targets
         parts += arguments.map { "\($0.key)\n\($0.value)" }
+        if let m = explicitMessage { parts += [m.recipient ?? "", m.body] }
         return parts.joined(separator: "\n")
     }
 }

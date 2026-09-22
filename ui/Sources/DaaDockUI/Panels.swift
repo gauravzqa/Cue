@@ -60,6 +60,7 @@ final class DockPanel: NSPanel {
 /// job can raise a card while the dock is closed.
 final class ApprovalPanel: NSPanel {
     init(view: some View) {
+        let host = NSHostingView(rootView: AnyView(view))
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
@@ -79,19 +80,28 @@ final class ApprovalPanel: NSPanel {
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true
-        contentView = NSHostingView(rootView: view)
+        contentView = host
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
+    /// Sized to the card, then clamped to the screen's `visibleFrame` (see
+    /// `PanelPlacement`), so on a small or "Larger Text" display the header,
+    /// the pinned claim and the footer with Cancel / Approve are on screen
+    /// and the card's scrolling region is what gives way. `visibleFrame`
+    /// excludes the menu bar, so the top is never tucked under it.
     func centreOnActiveScreen() {
-        guard let screen = NSScreen.main else { return }
-        let size = contentView?.fittingSize ?? frame.size
-        setContentSize(size)
-        let f = screen.visibleFrame
-        setFrameOrigin(NSPoint(x: f.midX - size.width / 2,
-                               y: f.midY - size.height / 2 + 40))
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let content = contentView?.fittingSize ?? frame.size
+        // With `.fullSizeContentView` these are normally identical; converting
+        // anyway keeps the clamp honest if the style mask ever changes.
+        let wanted = frameRect(forContentRect: NSRect(origin: .zero, size: content)).size
+        let f = PanelPlacement.clampedFrame(content: wanted, visible: screen.visibleFrame)
+        // The hosting view must not push back with its ideal size as a
+        // minimum, or AppKit grows the window past the clamp again.
+        (contentView as? NSHostingView<AnyView>)?.sizingOptions = []
+        setFrame(f, display: true)
     }
 }
 

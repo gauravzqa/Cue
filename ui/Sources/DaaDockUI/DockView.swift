@@ -302,6 +302,11 @@ struct IdentityBanner: View {
     let notice: IdentityNotice
     @State private var expanded = false
 
+    init(notice: IdentityNotice, expanded: Bool = false) {
+        self.notice = notice
+        _expanded = State(initialValue: expanded)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {

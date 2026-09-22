@@ -44,6 +44,8 @@ struct HistoryView: View {
 
     enum Tab: String, CaseIterable { case history = "History", setup = "Set-up" }
 
+    init(tab: Tab = .history) { _tab = State(initialValue: tab) }
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
@@ -224,6 +226,11 @@ struct HistoryView: View {
 struct AuditRow: View {
     let record: AuditRecord
     @State private var expanded = false
+
+    init(record: AuditRecord, expanded: Bool = false) {
+        self.record = record
+        _expanded = State(initialValue: expanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

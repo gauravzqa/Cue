@@ -162,7 +162,13 @@ behind a one-time explainer whose every sentence is enforced in `handle_chunk`.
 - **script args first**, labelled `THIS RUNS`, monospaced, **never truncated**,
   never behind a disclosure triangle. A 400-line script makes the card scroll;
 - **every argument in full**, sorted, script keys first;
-- **consequences ⚑-flagged** at the top, in prose;
+- **consequences ⚑-flagged** at the top, in prose, **most destructive first**
+  (`ConsequenceOrder`; an explicit `consequenceOrder` array from Python wins);
+- **the claim is pinned**: header, verb phrase, message and flags sit outside the
+  scroll view, so at the bottom of a 400-line script you are still looking at
+  what daa says it will do. Only the script and the detail below it scroll;
+- **what is sent, and to whom, is shown large** on a send-message card (from a
+  `message: {to, body}` field, or the "sending this text:" consequence);
 - **"I inferred this — you didn't ask for it"** when `explicit == false`;
 - **synthetic judgment disclosed in plain words**: *"daa could not get a real
   judgment, so it is assuming the worst"*;
@@ -171,7 +177,13 @@ behind a one-time explainer whose every sentence is enforced in `handle_chunk`.
 - **inert for the first 400 ms** — kills the card-under-a-descending-cursor case;
 - **Approve disabled until the script has been scrolled to the end**;
 - **visible countdown**, and the card says *"doing nothing is a no"*;
-- **dry-run banner**: *"approving this will not actually run it"*;
+- **a stakes banner in BOTH states**: dry run says *"approving this will not
+  actually run it"*; live says *"This will really happen."* in red, and the live
+  Approve control is red, heavier and reads *"Approve for real · hold"*. A live
+  card is never the calmer of the two;
+- **the panel is clamped to the screen's `visibleFrame`** (`PanelPlacement`):
+  on a 1024×665 "Larger Text" display the scroll region shrinks and Cancel /
+  Approve stay on screen, below the menu bar;
 - **exactly one response per request**, guaranteed by `PendingApprovals`;
 - **a frame that cannot be rendered in full is refused and never shown.**
 
@@ -226,7 +238,7 @@ dock:
 | `script` | a real CONFIRM_VISUAL card with a 3-line AppleScript |
 | `long` | the same with a **400-line** script — exercises the scroll gate |
 | `synthetic` | a card whose judgment is synthetic (i.e. FakeJev) |
-| `live` | a card with `dryRun:false` — no dry-run banner |
+| `live` | a card with `dryRun:false` — red "This will really happen." banner |
 | `withdraw` | a card Python takes back after 3 s (`confirm.cancel`) |
 | `task` | a background job reporting progress into the task strip |
 | `crash` | the child exits — watch the backoff and the degraded state |
@@ -246,6 +258,37 @@ Until that exists, every grant is thrown away on the next build and the app
 says so.
 
 ---
+
+## Looking at it without running it: `make snapshots`
+
+Renders every screen -- all approval-card states, every panel phase, the
+menu-bar glyph, the cdhash notice, tasks, transcript, History -- in light and
+dark, to `build/snapshots/*.png`, with `build/snapshots/index.html` laying
+them out side by side. `ONLY=card make snapshots` renders a subset (and leaves
+the index alone).
+
+Each view draws itself into a bitmap from an `NSWindow` that is never ordered
+on screen (`NSView.cacheDisplay`). That is not a screenshot: no Screen
+Recording, no TCC prompt, no running app, no Python. The card payloads are
+transcribed from `tools/fake-bridge` and go through `FrameCodec` +
+`ConfirmRouter` exactly as in the app (`Sources/DaaDockSnapshots/Fixtures.swift`;
+keep it in sync).
+
+SwiftUI `ImageRenderer` was tried first and works under Command Line Tools, but
+draws every AppKit-backed control -- including the `ScrollView` that holds the
+whole card body -- as a yellow placeholder. Two `imagerenderer-*` images are
+kept to show that.
+
+Offscreen artefacts, so nobody files them as design bugs: materials
+(`.regularMaterial`) render as flat grey with nothing behind them; the
+`borderedProminent` button and an ON switch draw in their inactive-window
+(grey) style; animation is frozen; `dynamicTypeSize` has no effect on macOS.
+
+To make this possible the views moved from the `DaaDock` executable into a
+`DaaDockUI` library (`main.swift` is now only the entry point), the status-item
+drawing was lifted into `MenuBarGlyph`, and `IdentityBanner`, `AuditRow` and
+`HistoryView` gained initialisers for their initial disclosure/tab state.
+Nothing renders differently.
 
 ## Where the plan was wrong
 

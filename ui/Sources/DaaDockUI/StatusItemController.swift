@@ -68,7 +68,7 @@ final class StatusItemController {
         let size = NSSize(width: 22, height: 22)
         let image = NSImage(size: size, flipped: false) { [weak self] rect in
             guard let self else { return true }
-            self.draw(a, in: rect)
+            MenuBarGlyph.draw(a, in: rect, level: self.level, phase: self.animationPhase)
             return true
         }
         // `isTemplate` only when monochrome: a template image is recoloured by
@@ -78,8 +78,14 @@ final class StatusItemController {
         button.image = image
         button.alphaValue = a.opacity
     }
+}
 
-    private func draw(_ a: MenuBarAppearance, in rect: NSRect) {
+/// The glyph itself, as a pure drawing function of the appearance, the mic level
+/// and the animation phase. Split out of `StatusItemController` only so the
+/// snapshot renderer can draw the exact same pixels without an `NSStatusItem`.
+@MainActor
+enum MenuBarGlyph {
+    static func draw(_ a: MenuBarAppearance, in rect: NSRect, level: Double, phase animationPhase: Double) {
         let ink: NSColor = a.tint == .amber ? .systemOrange : .labelColor
 
         switch a.motion {
@@ -92,7 +98,7 @@ final class StatusItemController {
             let t = (sin(animationPhase * 4) + 1) / 2
             drawBars(rect, ink: ink, level: 0.35 + 0.5 * t)
         case .arc:
-            drawArc(rect, ink: ink)
+            drawArc(rect, ink: ink, phase: animationPhase)
         case .still:
             drawBars(rect, ink: ink, level: 0.32)
         }
@@ -121,7 +127,7 @@ final class StatusItemController {
         }
     }
 
-    private func drawBars(_ rect: NSRect, ink: NSColor, level: Double) {
+    private static func drawBars(_ rect: NSRect, ink: NSColor, level: Double) {
         ink.setFill()
         let heights = [0.45, 1.0, 0.6].map { max(0.18, min(1, $0 * (0.35 + level))) }
         let w: CGFloat = 2.6
@@ -136,7 +142,7 @@ final class StatusItemController {
         }
     }
 
-    private func drawArc(_ rect: NSRect, ink: NSColor) {
+    private static func drawArc(_ rect: NSRect, ink: NSColor, phase animationPhase: Double) {
         ink.setStroke()
         let path = NSBezierPath()
         let start = animationPhase * 90

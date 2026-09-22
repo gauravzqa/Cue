@@ -12,6 +12,7 @@ help:
 	@echo "make dr         print the designated requirement (the TCC identity)"
 	@echo "make gen-tests  regenerate the test registration list"
 	@echo "make lint       check that no policy vocabulary leaked into Swift"
+	@echo "make snapshots render every screen to PNG offscreen (build/snapshots/index.html)"
 	@echo "make clean"
 
 build:
@@ -43,13 +44,21 @@ demo: app
 dr:
 	@codesign --display -r - build/daa.app 2>&1 | sed -n 's/^# designated => //p'
 
+# Every screen, light and dark, rendered offscreen to build/snapshots/ -- each view
+# draws itself into a bitmap from a window that is never shown. No screenshot,
+# no Screen Recording, no running app. Debug build on purpose: the renderer
+# uses `@testable import DaaDockUI`. ONLY=<substring> renders a subset.
+snapshots:
+	swift build --product daadock-snapshots
+	$$(swift build --show-bin-path)/daadock-snapshots build/snapshots $(if $(ONLY),--only $(ONLY))
+
 # Risk 2 from the plan: "Swift becomes a place where policy hides." The Swift
 # side must hold no tier, no threshold and no allowlist -- it renders state and
 # forwards clicks. This greps for the vocabulary that would mean otherwise.
 # Comments are stripped first, so a doc comment explaining the rule is fine and
 # a line of code implementing one is not.
 lint:
-	@bad=$$(find Sources/DaaDock Sources/DaaDockCore -name '*.swift' \
+	@bad=$$(find Sources/DaaDock Sources/DaaDockUI Sources/DaaDockCore -name '*.swift' \
 	        -exec sed -e 's://.*::' -e '/^ *\*/d' {} + \
 	        | grep -nE '\b(RiskTier|blastRadius *[<>=]|allowlist|allowList|isSafe|autoApprove|auto_approve|shouldSkipConfirm)\b' \
 	        || true); \
@@ -61,4 +70,4 @@ clean:
 	swift package clean
 	rm -rf build .build
 
-.PHONY: help build test gen-tests app run demo dr lint clean
+.PHONY: help build test gen-tests app run demo dr lint snapshots clean
