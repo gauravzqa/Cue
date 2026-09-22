@@ -11,7 +11,7 @@ cp .env.example .env          # nothing here is required to run the tests
 
 `daa doctor` prints what is wired, what is live and what is fake. Everything
 runs with no API keys at all — every provider has an offline fake, and the
-666-test suite needs no network, no audio hardware and no permissions.
+1,700-test suite needs no network, no audio hardware and no permissions.
 
 ---
 
@@ -140,7 +140,8 @@ config.py      frozen Settings; all Jev thresholds are named fields
 jev/           judgment. Imports nothing from daa except contracts/config.
 tools/         macOS actions. Never imports jev/ or voice/.
 safety/        policy, undo journal, audit. Pure; imports no sibling.
-voice/         mic, STT, the loop. The ONLY module that may import all three.
+voice/         mic, STT, the agent loop. The ONLY module that may import all three.
+ui/            the dock protocol + `daa bridge` (Swift app lives in ../ui)
 evals/         labelled address-gate dataset + scoring harness
 ```
 
@@ -151,21 +152,36 @@ sibling subsystems, and `import daa.jev` no longer drags in the HTTP stack.
 
 ## State of things
 
-**Done and verified:** the whole pipeline end to end with fakes; 666 tests; the
-safety model above; 13 macOS tools; `doctor` / `say` / `listen` / `undo`.
+**Works end to end, with fakes:** the whole pipeline; the safety model above;
+29 tools (13 macOS + 11 browser + 5 computer use); `doctor` / `say` / `listen`
+/ `undo` / `bridge`; the SwiftUI dock (`cd ui && make run`).
 
-**Needs keys to be real:** every Jev judgment is currently `FakeJev`, which
-answers at maximum uncertainty — so with no `TYPESAFE_API_KEY` the gate never
-wakes and the confirm parser says "unclear". That is fail-closed working
-correctly, and it means **no gate quality number in this repo is real yet.**
-Run `evals/run_address_gate.py --live` once you have a key.
+**The brain is multi-step.** The model calls one tool, sees what happened, and
+calls the next — which is what lets it recover from "I could not find the ok
+button" by looking first. A tool result may carry only daa's own sentence about
+the step plus the SHAPE of the data (counts, flags, numbers) — never the data.
+Page text, control labels and clipboard contents do not reach the model;
+`summarise_page` is the one tool that sends text, and it announces that.
+Bounded by steps (8), wall clock (45s), and a stop when the same call repeats.
 
-**Not built:** local STT is a stub with a seam for whisper.cpp/Parakeet; the
-`CONFIRM_VISUAL` approval is a terminal prompt, not a GUI card; no journal
-pruning, so a consumed `set_clipboard` undo keeps the previous clipboard in the
-0600 journal indefinitely.
+**Capabilities are off by default.** `DAA_ENABLE_BROWSER` needs
+`uv pip install -e ".[browser]"` plus `playwright install chromium`;
+`DAA_ENABLE_COMPUTER_USE` needs Accessibility granted. Each adds a class of
+action the model can reach for, so turning one on is a decision.
 
-**TCC permissions on this machine are all denied**, so `focus_window` raising a
-specific window, window titles, AppleScript driving an app, and real shortcut
-execution have never run live. Their degradation paths are tested; their success
-paths are not.
+**Needs keys to be real:** with no `TYPESAFE_API_KEY` every Jev judgment is
+`FakeJev` answering at maximum uncertainty, so the gate never wakes and every
+confirmation reads "unclear". That is fail-closed working, and it means no gate
+quality number is real until you run `evals/run_address_gate.py --live`.
+
+**Not verified on a real screen:** the computer-use success paths pass against
+a real AppKit window, but only with the screen UNLOCKED — macOS hides windows
+from Accessibility otherwise, and that suite skips. Nobody has measured what
+fraction of real apps expose a nameable tree (`evals/ax_coverage.py`, needs the
+grant). The approval card has been rendered and reviewed as images but never
+seen on a live display.
+
+**Known gaps:** ad-hoc signing means macOS forgets the app's permissions on
+every rebuild (the app says so at launch); no journal pruning; Chromium
+detection still goes by app name in one place; a button press reports
+"possibly did nothing" even when it worked.

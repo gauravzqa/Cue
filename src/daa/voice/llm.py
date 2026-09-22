@@ -28,8 +28,12 @@ from typing import Any, Protocol
 from daa.contracts import ToolSpec
 
 SYSTEM_PROMPT = (
-    "You are daa, a voice assistant on the user's Mac. You are being SPOKEN to and "
-    "your reply will be SPOKEN aloud.\n"
+    # daa is spoken TO and answers in WRITING: the audio-out half was removed.
+    # Telling the model its words will be spoken invites it to write for the
+    # ear ("as I mentioned...") and to avoid anything unspeakable, which is
+    # the wrong shape for a line that is read in a transcript.
+    "You are daa, an assistant on the user's Mac. The user SPEAKS to you and "
+    "you answer in WRITING: your reply is shown as text, never read aloud.\n"
     "Rules:\n"
     "- One or two short sentences. No markdown, no lists, no file paths, no IDs.\n"
     "- If a tool can do what was asked, call it. Do not describe what you would do.\n"
