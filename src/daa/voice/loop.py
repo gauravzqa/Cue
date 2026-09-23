@@ -594,13 +594,21 @@ class VoiceLoop:
         #
         # What is NOT in here is as deliberate as what is:
         #
-        #   The ROUTER RAN ONCE, above, for the user's utterance -- not once
-        #   per step. `specs` and `allowed` are fixed for the whole turn, so
-        #   the menu cannot widen as the loop goes on, and the router-miss
-        #   escalation in `_handle_call` keeps firing on step six exactly as it
-        #   does on step one. Re-routing per step would cost a Jev call each
-        #   time AND would let a model talk its way onto the menu by taking
-        #   another step first.
+        #   The ROUTER RUNS AGAIN BEFORE EACH STEP, and the menu only ever
+        #   GROWS (union, never replacement). Running it once was right for a
+        #   single-shot brain and wrong for this one: the tools a task needs at
+        #   step two are routinely invisible at step one. Measured, on a live
+        #   run -- "open a tab to example.com and tell me what the page says"
+        #   activated `open_tab` alone, so `read_page` was not on the menu and
+        #   the model correctly answered "I can open the tab, but I can't read
+        #   the page contents back to you".
+        #
+        #   The objection to re-routing is that a model could talk its way onto
+        #   the menu by taking a step first. It can -- and being on the menu is
+        #   not what makes an action cheap. Every tool still resolves, clears
+        #   the risk gate, and is held at its own floor; a tool NEVER routed
+        #   for still takes the router-miss escalation. What re-routing buys is
+        #   reachability, not permission.
         #
         #   NO GRANT IS REQUESTED. `request_grant` exists and would let daa ask
         #   once for a whole plan instead of once per mutation, which is a
@@ -620,6 +628,17 @@ class VoiceLoop:
         previous: tuple[str, str] | None = None
 
         while True:
+            if outcome.steps:
+                # Re-route with the same utterance and the updated context: the
+                # transcript now carries what the earlier steps actually found.
+                # Union, so a tool the model is mid-plan with can never vanish
+                # from under it, and capped so an eight-step task cannot grow
+                # the prompt without bound.
+                by_name = {s.name: s for s in specs}
+                for spec in self._activate(utterance):
+                    by_name.setdefault(spec.name, spec)
+                specs = list(by_name.values())[:_MAX_MENU]
+                allowed = allowed | frozenset(s.name for s in specs)
             turn = self._ask_llm(specs)
             outcome.reply = turn.text
             if not turn.tool_calls:
@@ -2091,6 +2110,11 @@ class _NeverWake(_AlwaysWake):
     wake = False
     addressed_p = 0.0
 
+
+# The most tools the model is ever shown at once. The router picks at most 5
+# per pass; the union across steps is capped here so a long task cannot
+# quietly grow the prompt -- and a bigger menu is a worse menu.
+_MAX_MENU = 8
 
 def _call_key(call: ToolCall) -> tuple[str, str]:
     """A comparable identity for a tool call, for the repetition stop.

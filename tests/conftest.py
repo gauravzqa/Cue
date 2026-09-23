@@ -33,6 +33,42 @@ _PROVIDER_KEYS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Neutralise the developer's .env AT IMPORT TIME, not in a fixture.
+#
+# `daa.tools` registers its tools when the module is imported, and that calls
+# `Settings.load()` -> `load_dotenv()`. A session fixture runs AFTER test
+# modules are imported, so by the time it fired the registry had already been
+# built from whatever was in the repo's .env. With DAA_ENABLE_BROWSER=1 set
+# locally that is 29 tools instead of 13, and five tests that assert on the
+# registry fail on one machine and pass on another.
+#
+# conftest is imported before any test module, so this is the only place early
+# enough to be sure.
+# ---------------------------------------------------------------------------
+import os as _os
+
+import daa.config as _cfg
+
+_cfg.load_dotenv = lambda *a, **kw: False
+_SAVED_ENV = {
+    k: _os.environ.pop(k, None)
+    for k in (
+        "TYPESAFE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ASSEMBLYAI_API_KEY",
+        "INWORLD_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "DAA_DRY_RUN",
+        "DAA_ALWAYS_ON",
+        "DAA_STT_LOCAL",
+        "DAA_ENABLE_BROWSER",
+        "DAA_ENABLE_COMPUTER_USE",
+    )
+}
+
+
 class NetworkUsedInTest(RuntimeError):
     """Raised instead of connecting. The message names the offender."""
 

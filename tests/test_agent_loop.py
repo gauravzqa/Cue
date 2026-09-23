@@ -455,7 +455,7 @@ def test_a_tool_the_router_did_not_activate_still_escalates_on_a_later_step():
     assert press.runs == []
 
 
-def test_the_router_runs_once_for_the_whole_turn():
+def test_the_router_runs_again_before_each_step_and_the_menu_only_grows():
     read = ScriptedTool(spec=READ)
     press = ScriptedTool(spec=PRESS)
     router = StubRouter()
@@ -470,7 +470,52 @@ def test_the_router_runs_once_for_the_whole_turn():
         router=router,
     )
     loop.handle_text("press ok")
-    assert router.seen == ["press ok"], "the router was asked more than once per utterance"
+    # Once per ask, not once per turn. Running it once was right for a
+    # single-shot brain and wrong for a multi-step one: measured on a live run,
+    # "open a tab to example.com and tell me what the page says" activated
+    # `open_tab` alone, so `read_page` was never on the menu and the model
+    # answered "I can open the tab, but I can't read the page contents back".
+    # The utterance is the same every time -- what changes is the context.
+    assert router.seen == ["press ok", "press ok", "press ok"]
+    assert len(router.seen) == 3, "one routing pass per ask"
+
+
+def test_a_tool_the_router_adds_later_is_reachable_but_not_cheaper():
+    """Re-routing buys REACHABILITY, not permission.
+
+    The objection to re-routing is that a model could talk its way onto the
+    menu by taking a step first. It can -- and the menu is not what makes an
+    action cheap. A tool that appears later still resolves, still clears the
+    risk gate, and is still held at its own floor.
+    """
+    read = ScriptedTool(spec=READ)
+    press = ScriptedTool(spec=PRESS)
+    class StagedRouter:
+        """Offers `read_page` first and adds `press_button` on later passes."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def activate(self, utterance, specs, ctx):
+            self.calls += 1
+            wanted = {"read_page"} if self.calls == 1 else {"read_page", "press_button"}
+            return [s for s in specs if s.name in wanted]
+
+    router = StagedRouter()
+    loop, _llm, _ = build(
+        tools=[read, press],
+        turns=[
+            LLMTurn(tool_calls=(ToolCall("read_page", {}),)),
+            LLMTurn(tool_calls=(ToolCall("press_button", {"label": "ok"}),)),
+            LLMTurn(text="Done."),
+        ],
+        tier=RiskTier.SILENT,
+        router=router,
+    )
+    out = loop.handle_text("read it then press ok")
+    assert router.calls >= 2, "the router was not re-asked"
+    assert press.runs, "the later tool was never reached"
+    assert out.dispositions[-1].tier >= RiskTier.SILENT
 
 
 # ---------------------------------------------------------------------------
