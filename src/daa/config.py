@@ -60,7 +60,18 @@ class Settings:
     # is only 0.04 wide on 40 samples -- widen the dataset before trusting it.
     address_gate: float = 0.42        # P(addressed to me) to wake at all
     end_of_turn: float = 0.75         # P(user finished speaking)
-    confirm_yes: float = 0.90         # P(that was a yes) to treat as consent
+    # 0.72 is the midpoint of a MEASURED gap, not a guess. Over the 160 cases
+    # in evals/consent_cases.jsonl a clear spoken yes scores 0.79..0.95 and
+    # everything that is not consent -- refusals, corrections, hedges -- tops
+    # out at 0.64 ("leave it", read as a hedge). It was 0.90, which sat ABOVE
+    # where Jev puts an ordinary "yes" and rejected 23 of 60 clear consents:
+    # the user says yes, daa says "Sorry -- yes or no?", and a second reply
+    # that also falls short abandons the action. It bought nothing, because
+    # nothing in the `no` or `unclear` slices came near 0.9.
+    confirm_yes: float = 0.72         # P(that was a yes) to treat as consent
+    # Left at 0.35 deliberately. `maybe` tops the unclear slice at 0.40, so it
+    # re-asks rather than being read as a refusal, which is the whole point of
+    # the middle band.
     confirm_no: float = 0.35          # below this, treat as a no; between = re-ask
     needs_planner: float = 0.60
     # Sits exactly at maximum uncertainty, and that is the whole idea: daa

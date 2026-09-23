@@ -66,6 +66,7 @@ class StubGate:
 class StubRouter:
     keep: tuple[str, ...] | None = None
     seen: list[str] = field(default_factory=list)
+    seen_next: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
 
     def activate(
         self, utterance: str, specs: Sequence[ToolSpec], ctx: Mapping[str, Any]
@@ -74,6 +75,20 @@ class StubRouter:
         if self.keep is None:
             return list(specs)
         return [s for s in specs if s.name in self.keep]
+
+    def activate_next(
+        self,
+        utterance: str,
+        specs: Sequence[ToolSpec],
+        ctx: Mapping[str, Any],
+        *,
+        done: Sequence[Mapping[str, Any]] = (),
+    ) -> list[ToolSpec]:
+        """The mid-task pass. Recorded separately from `activate`, because the
+        two are asked DIFFERENT questions and a test that cannot tell them
+        apart cannot notice the loop asking the wrong one."""
+        self.seen_next.append((utterance, tuple(d.get("tool") for d in done)))
+        return self.activate(utterance, specs, ctx)
 
 
 SYNTHETIC_ASSESSMENT = RiskAssessment(

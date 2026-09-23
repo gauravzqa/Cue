@@ -9,12 +9,15 @@ the limit, the newest turn is never dropped).
 
 from __future__ import annotations
 
+import pytest
+
 from daa.voice.transcript import (
     TOOL_PREFIX,
     Transcript,
     Turn,
     shape_data,
     tool_result_text,
+    withheld_keys,
 )
 
 
@@ -274,3 +277,70 @@ def test_the_window_is_wide_enough_for_a_whole_multi_step_turn():
         t.add_tool_result(tool="move_files", status="ok", summary=f"Step {i} done.")
         t.add_assistant("Working on it.")
     assert t.turns[0].text.startswith("file the ferrari screenshots")
+
+
+# ---------------------------------------------------------------------------
+# withheld content is SAID, not merely removed
+# ---------------------------------------------------------------------------
+
+
+PAGE_DATA = {
+    "words": 28,
+    "chars": 170,
+    "title": "Reports",
+    "site": "127.0.0.1:8799",
+    "headings": ["Quarterly reports"],
+    "text": "Q1 revenue was 412,000 dollars. Q2 revenue was 538,000 dollars.",
+}
+
+
+def test_a_result_whose_content_was_withheld_says_so():
+    """Removing the text is half the job. The other half is telling the model
+    the text was removed -- otherwise `ok` plus a word count reads as "I read
+    the page", and the model states what the page does not contain. Live, on a
+    page beginning "Q1 revenue was 412,000 dollars", daa answered "the reports
+    page shows no revenue figures"."""
+    line = tool_result_text(tool="read_page", status="ok", summary="It's Reports.", data=PAGE_DATA)
+    assert "NOT SENT TO YOU" in line
+    assert "the page text" in line
+    assert "summarise_page" in line, "the model must be told the announced way to get it"
+
+
+def test_the_content_itself_is_still_absent():
+    line = tool_result_text(tool="read_page", status="ok", summary="It's Reports.", data=PAGE_DATA)
+    assert "412,000" not in line
+    assert "Quarterly reports" not in line
+
+
+def test_the_notice_survives_the_tool_result_clip():
+    """It sits ahead of the shape numbers precisely so that clipping eats the
+    counts and not the warning."""
+    transcript = Transcript()
+    stored = transcript.add_tool_result(
+        tool="read_page", status="ok",
+        summary="It's a very long page title said at length " * 4,
+        data=PAGE_DATA,
+    )
+    assert "NOT SENT TO YOU" in stored.text
+
+
+def test_a_step_that_withheld_nothing_carries_no_warning():
+    """A warning on every step is a warning nobody reads."""
+    line = tool_result_text(tool="open_tab", status="ok", summary="Opened it.",
+                            data={"site": "example.com", "tab_id": "t1"})
+    assert "NOT SENT" not in line
+
+
+def test_an_empty_container_is_not_announced_as_withheld():
+    line = tool_result_text(tool="find_on_page", status="ok", summary="No matches.",
+                            data={"count": 0, "matches": []})
+    assert "NOT SENT" not in line
+
+
+@pytest.mark.parametrize(
+    "key, phrase",
+    [("text", "the page text"), ("clipboard", "the clipboard contents"),
+     ("controls", "the control labels"), ("windows", "the window titles")],
+)
+def test_each_kind_of_withheld_content_is_named(key, phrase):
+    assert phrase in withheld_keys({key: ["something"] if key != "text" else "something"})

@@ -101,6 +101,17 @@ def normalize_url(raw: str) -> str:
 
     A bare host spoken aloud is the common case, and defaulting it to https
     rather than http means the fallback is the encrypted one.
+
+    WITH ONE EXCEPTION: a PRIVATE host carrying an EXPLICIT non-default port,
+    such as `127.0.0.1:8799/reports` or `192.168.1.4:8080`, defaults to http.
+    Nothing on the public internet is reached this way, nothing is downgraded
+    -- a spoken `https://` is still honoured, this only fills in a scheme
+    nobody gave -- and a dev server on a loopback port is essentially never
+    TLS. Defaulting it to https produced a TLS handshake against a plain HTTP
+    server and the unhelpful failure "navigation failed (Error)". It was
+    intermittent in the worst way: whether the task worked depended on whether
+    the model happened to type `http://`, so the same instruction succeeded
+    and failed minutes apart.
     """
     text = str(raw or "").strip()
     if not text:
@@ -108,10 +119,41 @@ def normalize_url(raw: str) -> str:
     if "://" not in text:
         head = text.split("/", 1)[0].split("?", 1)[0]
         # "javascript:alert(1)" and "mailto:x@y" have a scheme but no "://".
-        if ":" in head and not head.split(":", 1)[1].isdigit():
+        # `[::1]:8080` has colons everywhere and is a HOST: checked first, or
+        # it reads as the scheme "[" and is handed back unchanged -- with no
+        # scheme at all, so `classify` then refuses it as "not a web page".
+        if not head.startswith("[") and ":" in head and not head.split(":", 1)[1].isdigit():
             return text
-        text = "https://" + text
+        text = ("http://" if _bare_private_with_port(head) else "https://") + text
     return text
+
+
+def _explicit_port(authority: str) -> str:
+    """The port written in an authority, or "". Handles `[::1]:8080`."""
+    tail = str(authority or "").rsplit("@", 1)[-1]
+    if tail.startswith("["):
+        _, _, after = tail.partition("]")
+        tail = after
+    part = tail.rsplit(":", 1)
+    return part[1] if len(part) == 2 and part[1].isdigit() else ""
+
+
+def _bare_private_with_port(authority: str) -> bool:
+    """A scheme-less private host with an explicit port that is not 443.
+
+    Deliberately narrow. A private host WITHOUT a port keeps the https default
+    -- `router.local` or a bare `192.168.1.1` is a device someone may well have
+    put a certificate on -- and a public host is never affected at all. An
+    explicit `:443` is someone saying TLS, so it is left alone; an explicit
+    `:80` is someone saying the opposite, which is why this asks for the port
+    itself rather than reusing `port_suffix` (which reports ":80" as absent,
+    being http's default, and would have sent `127.0.0.1:80` to https).
+    """
+    host, _ = split_host(authority)
+    if not host or not is_private_host(host):
+        return False
+    port = _explicit_port(authority)
+    return bool(port) and port != "443"
 
 
 def split_host(netloc: str) -> tuple[str, bool]:
@@ -235,12 +277,24 @@ def speakable_host(raw_or_host: str) -> str:
 
     What a person would call the site. `www.` is noise nobody says out loud,
     and the path is not part of the site's identity.
+
+    A NON-DEFAULT PORT IS. It survives here for the same reason `port_suffix`
+    keeps it in the loggable form, and the case for it is stronger: this string
+    is what daa SAYS, so it is the sentence in "should I open 127.0.0.1?" that
+    the user answers yes to. Speaking `127.0.0.1` for `127.0.0.1:8799` names a
+    different server -- and it does not just mislead the user. Measured, on a
+    live run: the model read its own readback back, saw the port it had asked
+    for was missing, concluded the wrong page had been opened, and stopped to
+    ask. A readback that does not name the resource is the one failure this
+    codebase treats as unacceptable, whoever is reading it.
     """
     text = str(raw_or_host or "").strip()
-    host = split_host(urlsplit(normalize_url(text)).netloc)[0] if "/" in text or "://" in text else ""
+    parts = urlsplit(normalize_url(text))
+    netloc = parts.netloc if parts.netloc else text
+    host = split_host(netloc)[0]
     if not host:
-        host = split_host(text)[0]
-    return host.removeprefix("www.")
+        return ""
+    return _authority(host.removeprefix("www."), port_suffix(netloc, parts.scheme or "https"))
 
 
 def origin_of(raw: str) -> str:

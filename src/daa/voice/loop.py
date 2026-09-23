@@ -297,6 +297,9 @@ class VoiceLoop:
         self._segments: Iterator[AudioChunk] | None = None
         # Replies for confirmation when there is no mic (the `daa say` path).
         self._scripted_replies: list[str] = []
+        # The steps taken so far in THIS turn, for mid-task routing.
+        # Reset by `_act`, never read across turns.
+        self._done: list[dict[str, Any]] = []
         # Every line daa has said this session, asides included. The
         # transcript deliberately excludes notices (see `_say_aside`), so this
         # is the only complete record of what reached the user.
@@ -551,6 +554,24 @@ class VoiceLoop:
             # the machine into a hot mic that acts on ambient conversation.
             return _NeverWake()
 
+    def _activate_next(self, utterance: str) -> list[ToolSpec]:
+        """Mid-task routing: which tool finishes what is left.
+
+        Degrades to NO NEW TOOLS rather than to no tools. The turn already has
+        a menu; a router that cannot answer must not be able to shrink it.
+        """
+        specs: list[ToolSpec] = list(self.registry.specs()) if self.registry is not None else []
+        nxt = getattr(self.router, "activate_next", None) if self.router is not None else None
+        if not callable(nxt) or not specs:
+            return []
+        try:
+            active = list(nxt(utterance, specs, self._context(), done=tuple(self._done)))
+        except Exception as exc:  # noqa: BLE001 -- isolation boundary, see comment
+            self._emit("error", where="router_next", error=str(exc))
+            return []
+        self._emit("rerouted", step=len(self._done), added=tuple(s.name for s in active))
+        return active
+
     def _activate(self, utterance: str) -> list[ToolSpec]:
         specs: list[ToolSpec] = list(self.registry.specs()) if self.registry is not None else []
         if self.router is None or not specs:
@@ -576,6 +597,7 @@ class VoiceLoop:
         synthetic: bool = False,
     ) -> None:
         self.transcript.add_user(utterance)
+        self._done = []
         specs = self._activate(utterance)
         outcome.activated = tuple(s.name for s in specs)
         # Past the gate, so the text is ours to keep. `text` is a redacted key
@@ -629,13 +651,17 @@ class VoiceLoop:
 
         while True:
             if outcome.steps:
-                # Re-route with the same utterance and the updated context: the
-                # transcript now carries what the earlier steps actually found.
-                # Union, so a tool the model is mid-plan with can never vanish
-                # from under it, and capped so an eight-step task cannot grow
-                # the prompt without bound.
+                # Re-route on WHAT REMAINS, not on the utterance again. Asking
+                # the original question a second time returns the original
+                # answer -- a compound instruction is dominated by its first
+                # clause, so "open X, then read it" puts 0.69 on `open_tab`
+                # and 0.02 on `read_page` no matter how many times it is asked.
+                # `activate_next` asks which tool finishes the job given the
+                # steps already taken. Union, so a tool the model is mid-plan
+                # with can never vanish from under it, and capped so an
+                # eight-step task cannot grow the prompt without bound.
                 by_name = {s.name: s for s in specs}
-                for spec in self._activate(utterance):
+                for spec in self._activate_next(utterance):
                     by_name.setdefault(spec.name, spec)
                 specs = list(by_name.values())[:_MAX_MENU]
                 allowed = allowed | frozenset(s.name for s in specs)
@@ -722,12 +748,20 @@ class VoiceLoop:
             summary = " ".join(outcome.spoken[before_spoken:]).strip()
             data = {}
             dry = False
+        # The ONE tool allowed to put content in front of the model, decided
+        # from the TOOL'S OWN SPEC and never from the data it returned. A tool
+        # cannot elect itself into this by naming a key `text`; a human has to
+        # tag its spec `egress`, and such a tool sits at ANNOUNCE or above, so
+        # the user has already heard that it is about to happen.
+        egress = status == "ok" and _is_egress(self.registry, call.name)
         written = self.transcript.add_tool_result(
             tool=call.name,
             status=status,
             summary=summary or "Nothing happened.",
             data=data,
             dry_run=dry,
+            allow_text=egress,
+            echo=call.args,
         )
         # Intermediate steps are VISIBLE. The heavy lifting is already done by
         # the events `_handle_call` and `_execute` emit -- judgment,
@@ -742,6 +776,10 @@ class VoiceLoop:
             dry_run=dry,
             fed_back_chars=len(written.text),
         )
+        # What the NEXT routing pass is asked about. Name, outcome and the
+        # sentence the tool itself wrote -- the same one the user hears. No
+        # arguments and no data, on the same rule the transcript follows.
+        self._done.append({"tool": call.name, "status": status, "result": summary})
 
     def _ask_llm(self, specs: Sequence[ToolSpec]) -> LLMTurn:
         if self.llm is None:
@@ -2109,6 +2147,24 @@ class _AlwaysWake:
 class _NeverWake(_AlwaysWake):
     wake = False
     addressed_p = 0.0
+
+
+
+def _is_egress(registry: Any, name: str) -> bool:
+    """Is this tool the announced way to send content to the model?
+
+    Read from the REGISTERED SPEC, by name, at the moment the result is filed.
+    Not from the ToolResult, and not from anything the model said: a tool that
+    could opt itself in by returning a key called `text` would be a hole with
+    a docstring in front of it.
+    """
+    if registry is None:
+        return False
+    try:
+        spec = registry.get(name).spec
+    except Exception:  # noqa: BLE001 -- unknown tool: not an egress tool
+        return False
+    return "egress" in (getattr(spec, "tags", None) or ())
 
 
 # The most tools the model is ever shown at once. The router picks at most 5

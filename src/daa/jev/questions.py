@@ -134,13 +134,11 @@ def gate_state(transcript: str, ctx: Mapping[str, object]) -> dict[str, object]:
 # --- the tool router ------------------------------------------------------
 
 
-def tool_choice(specs: Sequence[ToolSpec]) -> Choice:
-    """A Choice over tool names, described by each spec's activation_hint.
+def _tool_criteria(specs: Sequence[ToolSpec]) -> dict[str, str | None]:
+    """The menu, shared by `tool_choice` and `next_tool_choice`.
 
-    `activation_hint` rather than `description` because description is written
-    for the conversational LLM ("moves files to the trash") while the hint is
-    written for this discrimination ("...not for ejecting disks or quitting
-    apps"). Falling back to description keeps an un-hinted tool routable.
+    One builder on purpose: a tool that is routable at step one and invisible
+    at step three would be the hardest kind of bug to see from the outside.
     """
     criteria: dict[str, str | None] = {
         spec.name: (spec.activation_hint or spec.description or None) for spec in specs
@@ -149,18 +147,76 @@ def tool_choice(specs: Sequence[ToolSpec]) -> Choice:
         "no tool applies: the utterance is conversation, a question the assistant can "
         "answer from what it already knows, or chatter"
     )
+    return criteria
+
+
+def tool_choice(specs: Sequence[ToolSpec]) -> Choice:
+    """A Choice over tool names, described by each spec's activation_hint.
+
+    `activation_hint` rather than `description` because description is written
+    for the conversational LLM ("moves files to the trash") while the hint is
+    written for this discrimination ("...not for ejecting disks or quitting
+    apps"). Falling back to description keeps an un-hinted tool routable.
+    """
     return Choice(
         instructions=(
             "Which tool, if any, would the assistant need in order to do what this "
             "utterance asks? Judge by what the user wants to happen, not by which words "
             "they used."
         ),
-        criteria=criteria,
+        criteria=_tool_criteria(specs),
+    )
+
+
+def next_tool_choice(specs: Sequence[ToolSpec]) -> Choice:
+    """The same menu, asked the question a HALF-FINISHED task needs answered.
+
+    `tool_choice` asks which tool the utterance needs, and for a single-shot
+    brain that is the whole question. For an agent loop it is the wrong one
+    from step two onward, because a compound instruction is dominated by its
+    first clause. Measured, live: "open the page at <addr>, then go to the
+    reports page and tell me what the figures were" puts 0.69 on `open_tab`
+    and 0.02 on `read_page` -- so after the tab was open the tool needed to
+    finish the task was not on the menu, and daa correctly reported that it
+    could not see page contents. Re-asking the same question produces the same
+    answer however many times the loop asks it; the fix is to ask about what
+    REMAINS.
+    """
+    return Choice(
+        instructions=(
+            "The assistant is PART WAY THROUGH carrying out the user's request. The "
+            "state lists the steps it has already taken and what each one returned. "
+            "Which tool does it need NEXT in order to finish what is left?\n"
+            "- Judge by what REMAINS to be done, not by the request as a whole. The "
+            "first clause of the request has usually already been carried out.\n"
+            "- A step that has already succeeded is not the answer. If the page is "
+            "open, the remaining work is whatever the user asked for ABOUT that page.\n"
+            "- Answer `none` only if nothing remains that a tool could do."
+        ),
+        criteria=_tool_criteria(specs),
     )
 
 
 def router_state(utterance: str, ctx: Mapping[str, object]) -> dict[str, object]:
     return {"utterance": utterance, "context": dict(ctx)}
+
+
+def next_step_state(
+    utterance: str,
+    ctx: Mapping[str, object],
+    done: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """State for `next_tool_choice`: the request, plus the steps already taken.
+
+    `done` carries each step's tool name, status and the sentence the tool
+    itself wrote -- the same sentence the user hears. It carries no tool
+    arguments and no page content, for the same reason the transcript does not.
+    """
+    return {
+        "request": utterance,
+        "steps_already_taken": [dict(step) for step in done],
+        "context": dict(ctx),
+    }
 
 
 # --- the risk gate --------------------------------------------------------

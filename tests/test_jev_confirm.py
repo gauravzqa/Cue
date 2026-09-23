@@ -10,7 +10,7 @@ from daa.jev import questions as Q
 from daa.jev.client import FakeJev, JevUnavailable
 from daa.jev.confirm import ConfirmParser
 
-SETTINGS = Settings()  # confirm_yes 0.90, confirm_no 0.35
+SETTINGS = Settings()  # confirm_yes 0.72, confirm_no 0.35 -- see evals/run_consent.py
 
 PENDING = ResolvedAction(
     tool="send_message",
@@ -27,22 +27,36 @@ def interpret(p, reply="whatever", settings=SETTINGS, pending=PENDING):
 # --- thresholds -----------------------------------------------------------
 
 
+# Written against the SETTINGS values rather than literals. The literals were
+# 0.90/0.35, and when confirm_yes moved to a measured 0.72 the cases that
+# encoded the old boundary started asserting the old tuning rather than the
+# property they are named for. A band test should survive a retune.
+YES_T, NO_T = SETTINGS.confirm_yes, SETTINGS.confirm_no
+
+
 @pytest.mark.parametrize(
     "p, verdict",
     [
         (1.0, "yes"),
-        (0.901, "yes"),
-        (0.90, "yes"),      # exactly on confirm_yes: inclusive
-        (0.899, "unclear"),
-        (0.60, "unclear"),
-        (0.351, "unclear"),
-        (0.35, "no"),       # exactly on confirm_no: inclusive
-        (0.349, "no"),
+        (YES_T + 0.001, "yes"),
+        (YES_T, "yes"),                     # exactly on confirm_yes: inclusive
+        (YES_T - 0.001, "unclear"),
+        ((YES_T + NO_T) / 2, "unclear"),
+        (NO_T + 0.001, "unclear"),
+        (NO_T, "no"),                       # exactly on confirm_no: inclusive
+        (NO_T - 0.001, "no"),
         (0.0, "no"),
     ],
 )
 def test_the_three_bands_tile_the_whole_interval(p, verdict):
     assert interpret(p)[0] == verdict
+
+
+def test_the_yes_threshold_sits_inside_the_measured_separation_gap():
+    """evals/consent_cases.jsonl: a clear spoken yes scores no lower than 0.79
+    and nothing that is not consent scores above 0.64. A threshold outside that
+    gap either rejects ordinary consent or accepts a refusal."""
+    assert 0.64 < SETTINGS.confirm_yes <= 0.79
 
 
 def test_the_middle_band_is_unclear_so_the_caller_re_asks():

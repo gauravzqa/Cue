@@ -475,9 +475,17 @@ def test_the_router_runs_again_before_each_step_and_the_menu_only_grows():
     # "open a tab to example.com and tell me what the page says" activated
     # `open_tab` alone, so `read_page` was never on the menu and the model
     # answered "I can open the tab, but I can't read the page contents back".
-    # The utterance is the same every time -- what changes is the context.
-    assert router.seen == ["press ok", "press ok", "press ok"]
     assert len(router.seen) == 3, "one routing pass per ask"
+    # ...and the passes after the first ask a DIFFERENT question. Re-asking
+    # "which tool does this utterance need" returns the same answer forever:
+    # a compound instruction is dominated by its first clause, so "open X then
+    # read it" scores 0.69 on `open_tab` and 0.02 on `read_page` however many
+    # times it is asked. The mid-task passes are asked what REMAINS, and are
+    # told which steps have already run.
+    assert router.seen_next == [
+        ("press ok", ("read_page",)),
+        ("press ok", ("read_page", "press_button")),
+    ], "the mid-task passes must be told what has already been done"
 
 
 def test_a_tool_the_router_adds_later_is_reachable_but_not_cheaper():
@@ -498,8 +506,11 @@ def test_a_tool_the_router_adds_later_is_reachable_but_not_cheaper():
 
         def activate(self, utterance, specs, ctx):
             self.calls += 1
-            wanted = {"read_page"} if self.calls == 1 else {"read_page", "press_button"}
-            return [s for s in specs if s.name in wanted]
+            return [s for s in specs if s.name == "read_page"]
+
+        def activate_next(self, utterance, specs, ctx, *, done=()):
+            self.calls += 1
+            return [s for s in specs if s.name in {"read_page", "press_button"}]
 
     router = StagedRouter()
     loop, _llm, _ = build(
@@ -798,3 +809,78 @@ def test_an_unused_spec_import_stays_referenced():
     # keeps the shared fixtures honest if that file is refactored.
     assert MOVE.name == "move_files" and WEATHER.name == "get_weather"
     assert SpyTool(spec=MOVE).spec is MOVE
+
+
+# ---------------------------------------------------------------------------
+# 5. mid-task routing degrades to NO NEW TOOLS, never to no tools
+# ---------------------------------------------------------------------------
+
+
+def _two_step_loop(router):
+    return build(
+        tools=[ScriptedTool(spec=READ), ScriptedTool(spec=PRESS)],
+        turns=[
+            LLMTurn(tool_calls=(ToolCall("read_page", {}),)),
+            LLMTurn(tool_calls=(ToolCall("press_button", {"label": "ok"}),)),
+            LLMTurn(text="Done."),
+        ],
+        tier=RiskTier.SILENT,
+        router=router,
+    )
+
+
+def test_a_router_without_the_mid_task_question_still_runs_the_task():
+    """`activate_next` is newer than `ToolRouter`. A router that predates it --
+    an embedder's, a stub, an older pickle -- must not take the turn down, and
+    must not silently lose the menu the first pass already produced."""
+
+    class OldRouter:
+        def __init__(self):
+            self.seen = []
+
+        def activate(self, utterance, specs, ctx):
+            self.seen.append(utterance)
+            return list(specs)
+
+    router = OldRouter()
+    loop, _llm, _ = _two_step_loop(router)
+    out = loop.handle_text("read it then press ok")
+    assert out.steps == 2, "the turn ran to completion without the new question"
+    assert len(router.seen) == 1, "only the first pass is asked the old question"
+
+
+def test_a_mid_task_router_that_raises_leaves_the_menu_it_already_had():
+    """Fail-safe here is NOT the same as the first pass. `activate` returning
+    nothing means "no tool applies"; `activate_next` failing means "I have
+    nothing to ADD", and taking the existing menu away would strand a model
+    half way through a plan it was authorised to make."""
+
+    class BrokenNext:
+        def activate(self, utterance, specs, ctx):
+            return list(specs)
+
+        def activate_next(self, utterance, specs, ctx, *, done=()):
+            raise RuntimeError("jev is down")
+
+    loop, _llm, events = _two_step_loop(BrokenNext())
+    out = loop.handle_text("read it then press ok")
+    assert out.steps == 2, "a broken mid-task router ended the task"
+    assert any(e.kind == "error" and e.payload.get("where") == "router_next" for e in events)
+
+
+def test_the_menu_only_ever_grows_across_steps():
+    """A mid-task pass that names ONE tool must not evict the rest. The model
+    may be mid-plan with a tool the router no longer thinks is next."""
+
+    class NarrowingNext:
+        def activate(self, utterance, specs, ctx):
+            return list(specs)
+
+        def activate_next(self, utterance, specs, ctx, *, done=()):
+            return [s for s in specs if s.name == "read_page"]
+
+    loop, llm, _ = _two_step_loop(NarrowingNext())
+    out = loop.handle_text("read it then press ok")
+    assert out.steps == 2, "press_button was evicted by a narrowing mid-task pass"
+    offered = [names for _msgs, names in llm.seen]
+    assert all("press_button" in names for names in offered), offered

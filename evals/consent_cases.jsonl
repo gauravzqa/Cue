@@ -1,0 +1,160 @@
+{"reply": "yes", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yes", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yes", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yes", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yes", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "yeah", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yeah", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yeah", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yeah", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yeah", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "yep", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yep", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yep", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yep", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yep", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "go ahead", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "go ahead", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "go ahead", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "go ahead", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "go ahead", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "sure", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "sure", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "sure", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "sure", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "sure", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "do it", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "do it", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "do it", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "do it", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "do it", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "yes please", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yes please", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yes please", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yes please", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yes please", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "ok", "label": "yes", "category": "minimal", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "ok", "label": "yes", "category": "minimal", "action": "site", "spoken_description": "open example.com"}
+{"reply": "ok", "label": "yes", "category": "minimal", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "ok", "label": "yes", "category": "minimal", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "ok", "label": "yes", "category": "minimal", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "okay do that", "label": "yes", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "okay do that", "label": "yes", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "okay do that", "label": "yes", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "okay do that", "label": "yes", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "okay do that", "label": "yes", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "that's right, go ahead", "label": "yes", "category": "emphatic", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "that's right, go ahead", "label": "yes", "category": "emphatic", "action": "site", "spoken_description": "open example.com"}
+{"reply": "that's right, go ahead", "label": "yes", "category": "emphatic", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "that's right, go ahead", "label": "yes", "category": "emphatic", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "that's right, go ahead", "label": "yes", "category": "emphatic", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "mm-hmm yes", "label": "yes", "category": "disfluent", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "mm-hmm yes", "label": "yes", "category": "disfluent", "action": "site", "spoken_description": "open example.com"}
+{"reply": "mm-hmm yes", "label": "yes", "category": "disfluent", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "mm-hmm yes", "label": "yes", "category": "disfluent", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "mm-hmm yes", "label": "yes", "category": "disfluent", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "yes go for it", "label": "yes", "category": "emphatic", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yes go for it", "label": "yes", "category": "emphatic", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yes go for it", "label": "yes", "category": "emphatic", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yes go for it", "label": "yes", "category": "emphatic", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yes go for it", "label": "yes", "category": "emphatic", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "no", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "no", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "no", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "no", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "no", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "nope", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "nope", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "nope", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "nope", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "nope", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "don't", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "don't", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "don't", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "don't", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "don't", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "no thanks", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "no thanks", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "no thanks", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "no thanks", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "no thanks", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "cancel", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "cancel", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "cancel", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "cancel", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "cancel", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "stop", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "stop", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "stop", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "stop", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "stop", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "leave it", "label": "no", "category": "idiomatic", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "leave it", "label": "no", "category": "idiomatic", "action": "site", "spoken_description": "open example.com"}
+{"reply": "leave it", "label": "no", "category": "idiomatic", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "leave it", "label": "no", "category": "idiomatic", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "leave it", "label": "no", "category": "idiomatic", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "yeah no", "label": "no", "category": "contains_yes_token", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "yeah no", "label": "no", "category": "contains_yes_token", "action": "site", "spoken_description": "open example.com"}
+{"reply": "yeah no", "label": "no", "category": "contains_yes_token", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "yeah no", "label": "no", "category": "contains_yes_token", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "yeah no", "label": "no", "category": "contains_yes_token", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "no don't do that", "label": "no", "category": "plain", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "no don't do that", "label": "no", "category": "plain", "action": "site", "spoken_description": "open example.com"}
+{"reply": "no don't do that", "label": "no", "category": "plain", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "no don't do that", "label": "no", "category": "plain", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "no don't do that", "label": "no", "category": "plain", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "actually no", "label": "no", "category": "reversal", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "actually no", "label": "no", "category": "reversal", "action": "site", "spoken_description": "open example.com"}
+{"reply": "actually no", "label": "no", "category": "reversal", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "actually no", "label": "no", "category": "reversal", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "actually no", "label": "no", "category": "reversal", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "hold on no", "label": "no", "category": "disfluent", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "hold on no", "label": "no", "category": "disfluent", "action": "site", "spoken_description": "open example.com"}
+{"reply": "hold on no", "label": "no", "category": "disfluent", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "hold on no", "label": "no", "category": "disfluent", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "hold on no", "label": "no", "category": "disfluent", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "not that one", "label": "no", "category": "narrowing", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "not that one", "label": "no", "category": "narrowing", "action": "site", "spoken_description": "open example.com"}
+{"reply": "not that one", "label": "no", "category": "narrowing", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "not that one", "label": "no", "category": "narrowing", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "not that one", "label": "no", "category": "narrowing", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "no, the other one", "label": "unclear", "category": "correction", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "no, the other one", "label": "unclear", "category": "correction", "action": "site", "spoken_description": "open example.com"}
+{"reply": "no, the other one", "label": "unclear", "category": "correction", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "no, the other one", "label": "unclear", "category": "correction", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "no, the other one", "label": "unclear", "category": "correction", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "sure but not that one", "label": "unclear", "category": "narrowing", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "sure but not that one", "label": "unclear", "category": "narrowing", "action": "site", "spoken_description": "open example.com"}
+{"reply": "sure but not that one", "label": "unclear", "category": "narrowing", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "sure but not that one", "label": "unclear", "category": "narrowing", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "sure but not that one", "label": "unclear", "category": "narrowing", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "wait--", "label": "unclear", "category": "interrupted", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "wait--", "label": "unclear", "category": "interrupted", "action": "site", "spoken_description": "open example.com"}
+{"reply": "wait--", "label": "unclear", "category": "interrupted", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "wait--", "label": "unclear", "category": "interrupted", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "wait--", "label": "unclear", "category": "interrupted", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "hmm", "label": "unclear", "category": "nonanswer", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "hmm", "label": "unclear", "category": "nonanswer", "action": "site", "spoken_description": "open example.com"}
+{"reply": "hmm", "label": "unclear", "category": "nonanswer", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "hmm", "label": "unclear", "category": "nonanswer", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "hmm", "label": "unclear", "category": "nonanswer", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "what?", "label": "unclear", "category": "nonanswer", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "what?", "label": "unclear", "category": "nonanswer", "action": "site", "spoken_description": "open example.com"}
+{"reply": "what?", "label": "unclear", "category": "nonanswer", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "what?", "label": "unclear", "category": "nonanswer", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "what?", "label": "unclear", "category": "nonanswer", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "the second one instead", "label": "unclear", "category": "correction", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "the second one instead", "label": "unclear", "category": "correction", "action": "site", "spoken_description": "open example.com"}
+{"reply": "the second one instead", "label": "unclear", "category": "correction", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "the second one instead", "label": "unclear", "category": "correction", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "the second one instead", "label": "unclear", "category": "correction", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "maybe", "label": "unclear", "category": "hedge", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "maybe", "label": "unclear", "category": "hedge", "action": "site", "spoken_description": "open example.com"}
+{"reply": "maybe", "label": "unclear", "category": "hedge", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "maybe", "label": "unclear", "category": "hedge", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "maybe", "label": "unclear", "category": "hedge", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}
+{"reply": "can you repeat that", "label": "unclear", "category": "nonanswer", "action": "ip", "spoken_description": "open 127.0.0.1, that address is a bare number rather than a site name"}
+{"reply": "can you repeat that", "label": "unclear", "category": "nonanswer", "action": "site", "spoken_description": "open example.com"}
+{"reply": "can you repeat that", "label": "unclear", "category": "nonanswer", "action": "trash", "spoken_description": "move to the Trash report.pdf"}
+{"reply": "can you repeat that", "label": "unclear", "category": "nonanswer", "action": "field", "spoken_description": "type Dana into the Name field on example.com"}
+{"reply": "can you repeat that", "label": "unclear", "category": "nonanswer", "action": "shortcut", "spoken_description": "run the shortcut Text My Partner, sending this text: 'on my way'"}

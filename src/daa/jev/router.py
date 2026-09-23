@@ -53,7 +53,37 @@ class ToolRouter:
             # it picks a destructive tool at random is not.
             return []
 
-        answer = answers.choice(Q.Q_TOOL)
+        return self._rank(answers.choice(Q.Q_TOOL), specs)
+
+    def activate_next(
+        self,
+        utterance: str,
+        specs: Sequence[ToolSpec],
+        ctx: Mapping[str, Any] | None = None,
+        *,
+        done: Sequence[Mapping[str, Any]] = (),
+    ) -> list[ToolSpec]:
+        """What the task needs NEXT, given what it has already done.
+
+        Same ranking, different question -- see `Q.next_tool_choice`. The agent
+        loop calls this from step two onward and UNIONS the result onto the
+        menu it already had, so this can only ever add reachability; it cannot
+        take a tool away from a model that is mid-plan.
+        """
+        if not specs:
+            return []
+        try:
+            answers = self._provider.ask(
+                Q.next_step_state(utterance, ctx or {}, done),
+                {Q.Q_TOOL: Q.next_tool_choice(specs)},
+            )
+        except JevUnavailable:
+            # Nothing added. The menu the turn already had still stands, which
+            # is why this degrades to "no new tools" rather than to "no tools".
+            return []
+        return self._rank(answers.choice(Q.Q_TOOL), specs)
+
+    def _rank(self, answer: Any, specs: Sequence[ToolSpec]) -> list[ToolSpec]:
         probabilities = answer.probabilities
 
         # The explicit `none` option is a real answer, not a fallback. If it

@@ -153,6 +153,33 @@ def test_speakable_host_is_what_a_person_would_say():
     assert urls.speakable_host("https://checkout.stripe.com/pay") == "checkout.stripe.com"
 
 
+@pytest.mark.parametrize(
+    "raw, spoken",
+    [
+        ("http://127.0.0.1:8799/reports", "127.0.0.1:8799"),
+        ("127.0.0.1:8799", "127.0.0.1:8799"),
+        ("https://ex.com:8443/a", "ex.com:8443"),
+        ("[::1]:8080", "[::1]:8080"),
+        # The scheme's own default port is noise, like `www.`
+        ("https://example.com:443/x", "example.com"),
+        ("http://example.com:80/x", "example.com"),
+        ("https://www.example.com:8080/x", "example.com:8080"),
+    ],
+)
+def test_the_spoken_name_keeps_a_non_default_port(raw, spoken):
+    """The port is part of WHICH RESOURCE THIS IS, and this string is the one
+    daa says out loud -- so it is the sentence the user answers yes to. Saying
+    "127.0.0.1" for `127.0.0.1:8799` proposes a different server. Live, the
+    model read the readback of its own step, saw the port missing, and stopped
+    the task to ask whether the wrong page had been opened."""
+    assert urls.speakable_host(raw) == spoken
+
+
+def test_an_unspeakable_address_is_empty_rather_than_wrong():
+    assert urls.speakable_host("") == ""
+    assert urls.speakable_host("   ") == ''
+
+
 def test_origin_is_scheme_and_host_and_never_the_path():
     assert urls.origin_of("https://stripe.com/checkout/order?x=1") == "https://stripe.com"
     assert urls.origin_of("http://127.0.0.1:8931/x") == "http://127.0.0.1:8931"
@@ -172,3 +199,50 @@ def test_reverting_the_query_stripper_reintroduces_the_credential(monkeypatch):
     """
     monkeypatch.setattr(urls, "log_url", lambda raw: str(raw))
     assert "abc123SECRET" in urls.log_url(MAGIC_LINK)
+
+
+# ---------------------------------------------------------------------------
+# the scheme nobody gave
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # A private host with an explicit port is a dev server. It is not TLS.
+        ("127.0.0.1:8799/reports", "http://127.0.0.1:8799/reports"),
+        ("localhost:3000", "http://localhost:3000"),
+        ("192.168.1.4:8080", "http://192.168.1.4:8080"),
+        ("[::1]:8080", "http://[::1]:8080"),
+        # An explicit :80 is someone saying "not TLS" out loud.
+        ("127.0.0.1:80/x", "http://127.0.0.1:80/x"),
+        # ...and an explicit :443 is someone saying the opposite.
+        ("127.0.0.1:443/x", "https://127.0.0.1:443/x"),
+        # No port: a device on the local network may well have a certificate.
+        ("192.168.1.1", "https://192.168.1.1"),
+        ("router.local", "https://router.local"),
+        ("[::1]", "https://[::1]"),
+        # The public internet is untouched, port or no port.
+        ("amazon.co.uk/foo", "https://amazon.co.uk/foo"),
+        ("example.com:8080", "https://example.com:8080"),
+        # A scheme that WAS given is never rewritten, in either direction.
+        ("https://127.0.0.1:8799/x", "https://127.0.0.1:8799/x"),
+        ("http://example.com", "http://example.com"),
+        ("javascript:alert(1)", "javascript:alert(1)"),
+        ("mailto:a@b", "mailto:a@b"),
+    ],
+)
+def test_the_default_scheme(raw, expected):
+    """Live, this decided whether a task worked: the model sometimes typed
+    `http://` and sometimes did not, and the https default put a TLS handshake
+    in front of a plain HTTP dev server. The failure surfaced as "navigation
+    failed (Error)", so the same instruction succeeded and failed minutes
+    apart for a reason nothing reported."""
+    assert urls.normalize_url(raw) == expected
+
+
+def test_nothing_is_downgraded_only_filled_in():
+    """This may only ever supply a MISSING scheme. A spoken https on a private
+    address is a deliberate statement and stays."""
+    for raw in ("https://127.0.0.1:8799/x", "https://localhost:3000", "https://[::1]:8080"):
+        assert urls.normalize_url(raw) == raw
