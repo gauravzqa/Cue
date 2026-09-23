@@ -401,6 +401,11 @@ class PlaywrightSession:
         self._playwright: Any = None
         self._context: Any = None
         self._pages: dict[str, PlaywrightPage] = {}
+        # The tab a tool means when the model does not name one. Tracked
+        # rather than inferred: the pages dict is in ADOPTION order, whose
+        # first entry is Playwright's initial about:blank, so "the active
+        # one" was really "the oldest one".
+        self._active: str | None = None
         self._next_id = 1
         self._degraded: Degraded | None = None
         # Set once a browser is actually running, and the only thing `close()`
@@ -586,6 +591,8 @@ class PlaywrightSession:
         for tab_id, handle in list(self._pages.items()):
             if handle._page not in live:
                 self._pages.pop(tab_id, None)
+                if self._active == tab_id:
+                    self._active = None
 
     def tabs(self) -> list[TabInfo]:
         if self._context is None:
@@ -619,7 +626,15 @@ class PlaywrightSession:
             self._prune()
             if tab_id:
                 return self._pages.get(str(tab_id))
-            return next(iter(self._pages.values()), None)
+            active = self._pages.get(self._active or "")
+            if active is not None:
+                return active
+            # No active tab recorded: prefer the newest page that is actually
+            # showing something. `open_tab` then `read_page` used to read
+            # about:blank and report "no text" while the page the user asked
+            # for sat in the next tab.
+            real = [h for h in self._pages.values() if not _is_blank(h)]
+            return (real or list(self._pages.values()) or [None])[-1]
 
     def open_tab(self, url: str) -> PlaywrightPage:
         """Navigate a NEW tab. The URL guard runs one layer up, in the tool."""
@@ -628,6 +643,7 @@ class PlaywrightSession:
         with self._lock:
             page = self._context.new_page()
             handle = self._adopt(page)
+            self._active = handle.id
         handle.goto(url)
         return handle
 
@@ -758,3 +774,17 @@ __all__ = [
     "reap_profile_processes",
     "reset_session",
 ]
+
+
+def _is_blank(handle: Any) -> bool:
+    """A tab showing nothing. Playwright's context always opens one, and it is
+    the first thing adopted -- which is why "the active tab" could not be the
+    first entry in the pages dict."""
+    try:
+        # `url` is a METHOD on PlaywrightPage, not a property: reading it
+        # without calling it stringifies a bound method, which is never
+        # "about:blank", so every tab looked non-blank.
+        url = str(handle.url() or "")
+    except Exception:  # noqa: BLE001 -- a page mid-close answers nothing
+        return True
+    return url in ("", "about:blank") or url.startswith("chrome://newtab")

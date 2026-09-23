@@ -553,3 +553,31 @@ def test_the_tab_list_never_carries_a_query_string(tools, fixture_site):
     rows = tools["list_tabs"].run(tools["list_tabs"].resolve()).data["tabs"]
     assert any(r["url"] == f"{fixture_site}/article.html" for r in rows)
     assert "SECRETVALUE" not in str(rows)
+
+
+def test_a_freshly_opened_tab_is_the_one_a_tool_reads(browser, fixture_site):
+    browser, _options = browser
+    """"the active one by default" has to mean the tab just opened.
+
+    Playwright's context always starts with an about:blank page, and it is the
+    first thing adopted -- so `page(None)` returning the FIRST entry of the
+    pages dict returned the blank one. Measured end to end before the fix:
+    `open a tab to example.com and tell me what the page says` opened the tab,
+    then read about:blank and answered "the page came back with no readable
+    text", which is the canonical two-step browser task failing silently.
+    """
+    opened = browser.open_tab(f"{fixture_site}/article.html")
+    assert browser.page() is not None
+    assert browser.page().id == opened.id, "a tool with no tab_id read the wrong tab"
+    assert "about:blank" not in (browser.page().url() or "")
+
+    # Explicitly naming a tab still wins over the active one.
+    assert browser.page(opened.id).id == opened.id
+
+
+def test_closing_the_active_tab_does_not_leave_a_dangling_pointer(browser, fixture_site):
+    browser, _options = browser
+    opened = browser.open_tab(f"{fixture_site}/article.html")
+    browser.close_tab(opened.id)
+    page = browser.page()          # must not raise, must not return the closed tab
+    assert page is None or page.id != opened.id
