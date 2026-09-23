@@ -58,7 +58,11 @@ per utterance, you can afford to ask on every utterance. An LLM round trip per
 utterance is not affordable in either latency or money.
 
 Because Jev's probabilities are **calibrated**, the thresholds in `config.py`
-are tunable against real outcomes instead of guessed. See `evals/`.
+are tunable against real outcomes instead of guessed. See `evals/` — and tune
+them, because a guess here is expensive in a direction nobody notices.
+`confirm_yes` was 0.90 and sat *above* where Jev puts an ordinary spoken "yes"
+(0.79–0.95), so it rejected 23 of 60 clear consents while catching no refusal
+at all; `evals/run_consent.py` measures the gap and it is now 0.72.
 
 ---
 
@@ -158,11 +162,21 @@ sibling subsystems, and `import daa.jev` no longer drags in the HTTP stack.
 
 **The brain is multi-step.** The model calls one tool, sees what happened, and
 calls the next — which is what lets it recover from "I could not find the ok
-button" by looking first. A tool result may carry only daa's own sentence about
-the step plus the SHAPE of the data (counts, flags, numbers) — never the data.
-Page text, control labels and clipboard contents do not reach the model;
-`summarise_page` is the one tool that sends text, and it announces that.
-Bounded by steps (8), wall clock (45s), and a stop when the same call repeats.
+button" by looking first. Bounded by steps (8), wall clock (45s), and a stop
+when the same call repeats. The router runs again before each step and is asked
+a *different* question from step two onward — "which tool finishes what is
+left", not "which tool does this utterance need" — because a compound
+instruction is dominated by its first clause and re-asking it returns the same
+answer forever.
+
+A tool result may carry only daa's own sentence about the step, the SHAPE of
+the data (counts, flags, numbers), and the model's own arguments echoed back.
+Never the data. Page text, control labels and clipboard contents do not reach
+the model — and the result SAYS SO, because `ok` plus a word count reads as "I
+read the page" and a model that is not told otherwise will state what a page
+does not contain. `summarise_page` is the one tool that sends text: ANNOUNCE,
+refused on a logged-in page, never answerable by a scoped grant. That exception
+is keyed on the tool's spec tag, so no tool can elect itself into it.
 
 **Capabilities are off by default.** `DAA_ENABLE_BROWSER` needs
 `uv pip install -e ".[browser]"` plus `playwright install chromium`;

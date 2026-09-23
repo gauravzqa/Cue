@@ -27,3 +27,20 @@ Not raw accuracy — the classes are imbalanced and the costs are asymmetric.
   - p50 / p95 latency                             (must stay under ~150ms)
 Then pick `Settings.address_gate` from the ROC, rather than keeping 0.85
 because it looked like a reasonable number.
+
+## consent (`run_consent.py`)
+
+160 replies × 5 actions, labelled `yes` / `no` / `unclear`, including the ones
+a keyword parser gets backwards: "yeah no", "sure but not that one", "no, the
+other one".
+
+    .venv/bin/python -m evals.run_consent --live
+
+The two errors are never averaged. A **false consent** executes something the
+user declined. A **rejected yes** makes daa ask again and then abandon the
+action — cheap once, and the thing the user actually experiences.
+
+Measured against live Jev: a clear yes scores 0.79–0.95, everything that is
+not consent tops out at 0.64, and the gap between them is where the threshold
+belongs. `confirm_yes` was 0.90 — above ordinary consent — which rejected 23 of
+60 clear yeses and caught nothing in exchange.
