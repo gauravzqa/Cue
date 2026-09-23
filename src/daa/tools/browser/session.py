@@ -42,15 +42,18 @@ process rather than taking either on trust.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
+import signal
 import threading
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from daa.tools.base import Degraded
+from daa.tools.base import Degraded, run_argv
 from daa.tools.browser import urls
 from daa.tools.browser.page import (
     CONTROLS_JS,
@@ -69,6 +72,14 @@ DEFAULT_PAGE_CACHE_DIR = Path.home() / ".daa" / "pages"
 # hermes's shipped number, taken as-is: a real, load-bearing empirical cap from
 # a product that ran into the problem first.
 READ_PAGE_MAX_CHARS = 15_000
+
+# How long `close()` is allowed to wait for Chrome to go quietly before it stops
+# asking. `BrowserContext.close()` takes no timeout and is a *request* to a
+# process that may be wedged, so "closed" has to be something this code can
+# guarantee on its own: past this many seconds the browser is signalled instead.
+CLOSE_TIMEOUT_S = 5.0
+# After SIGTERM, how long Chrome gets to flush its profile before SIGKILL.
+REAP_GRACE_S = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +109,147 @@ class BrowserOptions:
     undo_ttl_s: float = 3600.0
     nav_timeout_ms: int = 20_000
     op_timeout_ms: int = 5_000
+
+
+# ---------------------------------------------------------------------------
+# Processes, owned by their profile directory
+# ---------------------------------------------------------------------------
+#
+# A browser daa launched and did not close is daa's fault, not the user's, and
+# it is not a cosmetic one: an orphaned Chrome holds the profile's
+# `SingletonLock`, so the NEXT `ensure()` degrades with "the browser profile is
+# already in use" and the tools stay broken until someone finds the process by
+# hand. `close()` therefore ends with a guarantee rather than a request.
+#
+# Everything below is keyed on ONE directory: the `--user-data-dir` daa itself
+# passed. The user's real Chrome runs on a different one, so nothing here can
+# reach it even if daa's own profile path is misconfigured -- and a path that
+# is empty, `/`, or the home directory is refused outright rather than matched
+# loosely.
+
+
+def _profile_flag(profile_dir: Path | str) -> str:
+    return f"--user-data-dir={Path(profile_dir).expanduser()}"
+
+
+def _is_reapable(profile_dir: Path | str) -> bool:
+    """Is this a directory specific enough to match process command lines on?"""
+    try:
+        profile = Path(profile_dir).expanduser()
+    except (TypeError, ValueError):
+        return False
+    text = str(profile)
+    if not text or text in ("", ".", "/"):
+        return False
+    return profile != Path.home() and profile != profile.parent
+
+
+def processes_using_profile(profile_dir: Path | str) -> list[int]:
+    """PIDs whose command line names EXACTLY this `--user-data-dir`.
+
+    The browser process and its GPU/network/renderer helpers all carry the
+    flag, so this finds the whole family. The match is the flag plus the full
+    path plus a word boundary: `--user-data-dir=/x/profile` must never match
+    `/x/profile-2`, and a profile path that is not specific enough to match on
+    (empty, `/`, `$HOME`) returns nothing rather than everything.
+    """
+    if not _is_reapable(profile_dir):
+        return []
+    flag = _profile_flag(profile_dir)
+    # Through `tools/base.py::run_argv` like every other spawn in this package:
+    # argv only, never a shell, always a timeout, and a missing `ps` comes back
+    # as empty output instead of an exception. Read-only, so it still runs
+    # under dry_run -- pretending not to look would not stop the leak.
+    out = run_argv(["/bin/ps", "-axo", "pid=,command="], timeout=10).stdout
+    found: list[int] = []
+    for line in out.splitlines():
+        pid_text, _, command = line.strip().partition(" ")
+        if not pid_text.isdigit():
+            continue
+        index = command.find(flag)
+        if index < 0:
+            continue
+        tail = command[index + len(flag):]
+        # A word boundary, so `.../profile` does not match `.../profile-2`.
+        if tail and not tail[0].isspace():
+            continue
+        found.append(int(pid_text))
+    return found
+
+
+def _driver_pid(playwright: Any) -> int | None:
+    """PID of Playwright's own node driver, if this build exposes it.
+
+    Private attributes, deliberately guarded: it is a best-effort handle used
+    only as the last step of a forced close, and a Playwright release that
+    renames it must cost a slower shutdown, not an exception.
+    """
+    with contextlib.suppress(Exception):
+        impl = getattr(playwright, "_impl_obj", playwright)
+        proc = impl._connection._transport._proc
+        pid = int(getattr(proc, "pid", 0) or 0)
+        return pid or None
+    return None
+
+
+def _signal(pids: Sequence[int], sig: int) -> None:
+    for pid in pids:
+        with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+
+
+def reap_profile_processes(
+    profile_dir: Path | str, *, grace_s: float = REAP_GRACE_S
+) -> list[int]:
+    """Leave no process running on this profile. Returns the PIDs it killed.
+
+    SIGTERM first so Chrome writes its profile out cleanly, SIGKILL after the
+    grace period for whatever ignored it. Bounded by construction: one `ps`
+    when nothing is running, `grace_s` plus a little when something is. The
+    PID list is re-read from `ps` between the two signals, so a PID that was
+    recycled in the meantime is simply not in it.
+    """
+    import time
+
+    alive = processes_using_profile(profile_dir)
+    if not alive:
+        return []
+    killed = list(alive)
+    _signal(alive, signal.SIGTERM)
+    deadline = time.monotonic() + max(0.0, grace_s)
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        alive = processes_using_profile(profile_dir)
+        if not alive:
+            return killed
+    _signal(alive, signal.SIGKILL)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        if not processes_using_profile(profile_dir):
+            break
+    return killed
+
+
+# Every session that has actually started a browser. Weak, so a session that is
+# garbage collected does not keep itself alive; the atexit hook exists for the
+# interpreter that dies with one still open -- an unhandled exception, a
+# crashed test, a `KeyboardInterrupt` in the voice loop.
+_LIVE_SESSIONS: weakref.WeakSet[PlaywrightSession] = weakref.WeakSet()
+_ATEXIT_REGISTERED = False
+
+
+def _close_live_sessions() -> None:
+    for session in list(_LIVE_SESSIONS):
+        with contextlib.suppress(Exception):
+            session.close(timeout_s=2.0)
+
+
+def _register_atexit() -> None:
+    global _ATEXIT_REGISTERED
+    if not _ATEXIT_REGISTERED:
+        atexit.register(_close_live_sessions)
+        _ATEXIT_REGISTERED = True
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +403,10 @@ class PlaywrightSession:
         self._pages: dict[str, PlaywrightPage] = {}
         self._next_id = 1
         self._degraded: Degraded | None = None
+        # Set once a browser is actually running, and the only thing `close()`
+        # needs in order to guarantee it is not running any more.
+        self._profile: Path | None = None
+        self._driver_pid: int | None = None
 
     # -- lifecycle -------------------------------------------------------
 
@@ -283,8 +439,15 @@ class PlaywrightSession:
                     remedy="check that I can write to your home folder",
                     detail=f"could not prepare the browser profile: {exc}",
                 )
+            # Recorded BEFORE the launch: if `launch_persistent_context` raises
+            # half-way, a Chrome may already be running on this directory, and
+            # the failure path has to be able to find it.
+            self._profile = profile
+            _register_atexit()
+            _LIVE_SESSIONS.add(self)
             try:
                 self._playwright = sync_playwright().start()
+                self._driver_pid = _driver_pid(self._playwright)
                 self._context = self._playwright.chromium.launch_persistent_context(
                     str(profile),
                     channel="chrome",
@@ -293,6 +456,13 @@ class PlaywrightSession:
                 )
             except Exception as exc:  # noqa: BLE001 - every failure here is a Degraded
                 self._shutdown_playwright()
+                # A launch that failed after Chrome started still leaves Chrome
+                # holding the profile's SingletonLock, and the next ensure()
+                # would degrade with "already in use" forever.
+                reap_profile_processes(profile)
+                self._profile = None
+                self._driver_pid = None
+                _LIVE_SESSIONS.discard(self)
                 return self._launch_degraded(exc)
             self._context.set_default_timeout(self.options.op_timeout_ms)
             for page in list(self._context.pages):
@@ -340,13 +510,64 @@ class PlaywrightSession:
         self._playwright = None
         self._context = None
 
-    def close(self) -> None:
+    def close(self, *, timeout_s: float = CLOSE_TIMEOUT_S) -> None:
+        """Stop the browser. Bounded, idempotent, and it leaves nothing behind.
+
+        `BrowserContext.close()` is a polite request over a pipe to a process
+        that may never answer -- it takes no timeout, and a hung Chrome hangs
+        the caller forever. So the polite request is made with a deadline: a
+        watchdog thread signals the browser processes running on THIS profile
+        once `timeout_s` has passed (which also unblocks the call), the driver
+        goes next if even that did not return, and the last thing `close()`
+        does is check `ps` and kill whatever is somehow still there. "Closed"
+        ends up meaning closed rather than asked-to-close.
+        """
         with self._lock:
-            if self._context is not None:
-                with contextlib.suppress(Exception):
-                    self._context.close()
-            self._pages.clear()
-            self._shutdown_playwright()
+            profile = self._profile
+            driver_pid = self._driver_pid
+            done = threading.Event()
+            watchdog: threading.Thread | None = None
+            if profile is not None:
+                watchdog = threading.Thread(
+                    target=self._watch_close,
+                    args=(done, profile, driver_pid, timeout_s),
+                    name="daa-browser-close-watchdog",
+                    daemon=True,
+                )
+                watchdog.start()
+            try:
+                if self._context is not None:
+                    with contextlib.suppress(Exception):
+                        self._context.close()
+                self._pages.clear()
+                self._shutdown_playwright()
+            finally:
+                done.set()
+                if watchdog is not None:
+                    watchdog.join(timeout=1.0)
+                self._context = None
+                self._playwright = None
+                self._pages.clear()
+                if profile is not None:
+                    reap_profile_processes(profile)
+                self._profile = None
+                self._driver_pid = None
+                _LIVE_SESSIONS.discard(self)
+
+    @staticmethod
+    def _watch_close(
+        done: threading.Event, profile: Path, driver_pid: int | None, timeout_s: float
+    ) -> None:
+        if done.wait(max(0.0, timeout_s)):
+            return
+        # Killing Chrome drops the pipe the sync call is blocked on, so the
+        # close() in the other thread returns (or raises, which it suppresses).
+        reap_profile_processes(profile)
+        if done.wait(1.0) or driver_pid is None:
+            return
+        # Still stuck: the node driver itself is wedged. It is a process daa
+        # started too, and nothing of the user's is behind it.
+        _signal([driver_pid], signal.SIGKILL)
 
     # -- tabs ------------------------------------------------------------
 
@@ -522,14 +743,18 @@ def profile_sites(session: PlaywrightSession) -> Sequence[str]:
 
 
 __all__ = [
+    "CLOSE_TIMEOUT_S",
     "DEFAULT_PAGE_CACHE_DIR",
     "DEFAULT_PROFILE_DIR",
     "READ_PAGE_MAX_CHARS",
+    "REAP_GRACE_S",
     "BrowserOptions",
     "PageCache",
     "PlaywrightPage",
     "PlaywrightSession",
     "get_session",
+    "processes_using_profile",
     "profile_sites",
+    "reap_profile_processes",
     "reset_session",
 ]

@@ -316,7 +316,7 @@ CONTROLS_JS = r"""
 class TabInfo:
     id: str
     title: str
-    safe_url: str          # scheme://host/path -- ALREADY normalised for logs
+    safe_url: str          # scheme://host[:port]/path -- normalised for logs
     host: str
     active: bool = False
 

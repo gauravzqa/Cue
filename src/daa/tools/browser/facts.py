@@ -153,7 +153,7 @@ class FormFacts:
     """The form a control submits. NAMES AND TYPES ONLY -- never a value."""
 
     method: str = "get"
-    action_url: str = ""          # loggable form: scheme://host/path
+    action_url: str = ""          # loggable form: scheme://host[:port]/path
     action_host: str = ""
     action_etld1: str = ""
     field_names: tuple[str, ...] = ()

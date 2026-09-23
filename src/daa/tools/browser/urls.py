@@ -6,7 +6,8 @@ Two jobs live here, and both are safety properties rather than conveniences.
 magic-link tokens, password-reset tokens, OAuth `code`/`state`, session ids and
 `?access_token=`. A logged URL is frequently a *working credential*, and
 `~/.daa/audit.jsonl` is 0600 but it is not encrypted and it is backed up. So
-`log_url()` produces `scheme://host/path` and nothing else, and it is the ONLY
+`log_url()` produces `scheme://host[:port]/path` and nothing else -- the port
+because it says *which* server, never a secret -- and it is the ONLY
 way a URL is allowed to reach `ResolvedAction.targets`, a `ToolResult.summary`,
 an `UndoAction`, or an `AuditEvent`. The full URL stays in `ToolResult.data`,
 which the audit builders in `safety/audit.py` never read.
@@ -77,7 +78,7 @@ class UrlVerdict:
 
     ok: bool
     url: str = ""            # normalised, full (kept OUT of every log)
-    safe_url: str = ""       # scheme://host/path -- the loggable form
+    safe_url: str = ""       # scheme://host[:port]/path -- the loggable form
     scheme: str = ""
     host: str = ""
     etld1: str = ""
@@ -122,6 +123,32 @@ def split_host(netloc: str) -> tuple[str, bool]:
     else:
         host = host.split(":", 1)[0]
     return host.lower().rstrip("."), had_userinfo
+
+
+def port_suffix(netloc: str, scheme: str) -> str:
+    """':8931', or '' when the port is absent or is the scheme's default.
+
+    The port is part of *which resource this is*, and it is not a secret: a
+    port is not a token, and no amount of knowing one gets anybody into an
+    account. So it survives into the loggable form, while the query, the
+    fragment and the userinfo do not. Dropping it was a real bug rather than a
+    cosmetic one -- `http://127.0.0.1:8931/x` logged as `http://127.0.0.1/x`
+    is an address the user never visited, and `close_tab`'s undo reopens the
+    loggable form, so the undo went to port 80 and got somebody else's server.
+    """
+    authority = str(netloc or "").rsplit("@", 1)[-1]
+    if authority.endswith("]"):                   # [::1] -- brackets, no port
+        return ""
+    tail = authority.rsplit(":", 1)
+    if len(tail) != 2 or not tail[1].isdigit():
+        return ""
+    default = "443" if scheme == "https" else "80" if scheme == "http" else ""
+    return "" if tail[1] == default else f":{tail[1]}"
+
+
+def _authority(host: str, port: str) -> str:
+    """host[:port], with an IPv6 literal re-bracketed so the URL reparses."""
+    return f"[{host}]{port}" if ":" in host else f"{host}{port}"
 
 
 def host_of(raw: str) -> str:
@@ -180,12 +207,12 @@ def is_private_host(host: str) -> bool:
 
 
 def log_url(raw: str) -> str:
-    """scheme://host/path. The ONLY form of a URL allowed into a log or a readback.
+    """scheme://host[:port]/path. The ONLY form allowed into a log or a readback.
 
     Query and fragment are dropped, not shortened: a truncated token is still a
     token prefix, and a prefix is enough to correlate a log line with a session.
     Userinfo is dropped for the same reason -- `https://user:pw@host/` in a log
-    is a password in a log.
+    is a password in a log. A non-default PORT is kept; see `port_suffix`.
     """
     text = str(raw or "").strip()
     if not text:
@@ -199,7 +226,8 @@ def log_url(raw: str) -> str:
     if not parts.scheme or not host:
         return ""
     path = parts.path or "/"
-    return urlunsplit((parts.scheme, host, path, "", ""))
+    authority = _authority(host, port_suffix(parts.netloc, parts.scheme))
+    return urlunsplit((parts.scheme, authority, path, "", ""))
 
 
 def speakable_host(raw_or_host: str) -> str:
@@ -221,13 +249,7 @@ def origin_of(raw: str) -> str:
     host, _ = split_host(parts.netloc)
     if not parts.scheme or not host:
         return ""
-    port = ""
-    if ":" in parts.netloc.rsplit("@", 1)[-1] and not parts.netloc.endswith("]"):
-        tail = parts.netloc.rsplit("@", 1)[-1].rsplit(":", 1)
-        if len(tail) == 2 and tail[1].isdigit():
-            default = "443" if parts.scheme == "https" else "80"
-            port = "" if tail[1] == default else f":{tail[1]}"
-    return f"{parts.scheme}://{host}{port}"
+    return f"{parts.scheme}://{_authority(host, port_suffix(parts.netloc, parts.scheme))}"
 
 
 def classify(raw: str, *, allow_private: bool = False) -> UrlVerdict:
@@ -288,6 +310,7 @@ __all__ = [
     "log_url",
     "normalize_url",
     "origin_of",
+    "port_suffix",
     "speakable_host",
     "split_host",
 ]

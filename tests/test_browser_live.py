@@ -22,9 +22,10 @@ Three rules it obeys, and they are not negotiable:
 
 from __future__ import annotations
 
+import functools
 import http.server
-import socketserver
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,13 @@ from daa.tools.browser import facts as factlib
 from daa.tools.browser import make_browser_tools
 from daa.tools.browser.acting import ROUTE_TO_SUBMIT
 from daa.tools.browser.base import STALE_SUMMARY
-from daa.tools.browser.session import BrowserOptions, PlaywrightSession
+from daa.tools.browser.session import (
+    DEFAULT_PROFILE_DIR,
+    BrowserOptions,
+    PlaywrightSession,
+    processes_using_profile,
+    reap_profile_processes,
+)
 
 playwright_api = pytest.importorskip(
     "playwright.sync_api",
@@ -95,26 +102,45 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def fixture_site(tmp_path_factory):
-    """Static HTML on loopback. Nothing here reaches the internet."""
+    """Static HTML on loopback. Nothing here reaches the internet.
+
+    THREADING, and that is the whole bug this file used to have. A plain
+    `socketserver.TCPServer` handles one connection at a time in the
+    `serve_forever` loop, and Chrome habitually opens a speculative connection
+    and then sends nothing on it. The loop blocks in `readline()` on that idle
+    socket, so it never looks at the shutdown flag again: `server.shutdown()`
+    waits on an event that will never be set, and pytest hangs at 100% with the
+    browser fixture's finaliser -- the one that closes Chrome -- still queued
+    behind it. That is what left a real Chrome running on the machine.
+    `ThreadingHTTPServer` gives each connection its own daemon thread, so an
+    idle one parks harmlessly and `shutdown()` returns.
+    """
     root = tmp_path_factory.mktemp("site")
     (root / "checkout.html").write_text(CHECKOUT_HTML, encoding="utf-8")
     (root / "article.html").write_text(ARTICLE_HTML, encoding="utf-8")
 
-    handler = type("Bound", (_Handler,), {"directory": str(root)})
-
-    def factory(*args, **kwargs):
-        return handler(*args, directory=str(root), **kwargs)
-
-    server = socketserver.TCPServer(("127.0.0.1", 0), factory)
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Handler, directory=str(root))
+    )
+    server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
+    started = time.monotonic()
     server.shutdown()
     server.server_close()
+    thread.join(timeout=5)
+    assert time.monotonic() - started < 5, "the fixture server did not shut down"
 
 
 @pytest.fixture(scope="module")
-def browser(tmp_path_factory):
+def browser(tmp_path_factory, fixture_site):
+    """The session under test, on a scratch profile that is never daa's own.
+
+    It depends on `fixture_site` so that it is set up second and therefore torn
+    down FIRST: Chrome goes away while the server it is talking to is still
+    answering, rather than after it has been shot out from under it.
+    """
     profile = tmp_path_factory.mktemp("profile")
     options = BrowserOptions(
         profile_dir=Path(profile),
@@ -125,12 +151,22 @@ def browser(tmp_path_factory):
         nav_timeout_ms=20_000,
         op_timeout_ms=5_000,
     )
+    # Never the profile the real daa uses: a test must not be able to evict the
+    # user's enrolled logins, or to be confused by a daa they have running.
+    assert Path(options.profile_dir) != DEFAULT_PROFILE_DIR
     session = PlaywrightSession(options)
     degraded = session.ensure()
     if degraded is not None:
         pytest.skip(f"no usable browser: {degraded.detail} -- {degraded.remedy}")
     yield session, options
+    started = time.monotonic()
     session.close()
+    elapsed = time.monotonic() - started
+    # The guarantee, asserted on the session the whole file just used: closing
+    # is bounded, and nothing is still running on daa's profile afterwards.
+    survivors = processes_using_profile(options.profile_dir)
+    assert not survivors, f"Chrome survived the session: {survivors}"
+    assert elapsed < 10, f"closing the browser took {elapsed:.1f}s"
 
 
 @pytest.fixture
@@ -194,6 +230,129 @@ def test_nothing_opens_a_debugging_port(browser):
         capture_output=True, text=True, check=False,
     ).stdout.strip()
     assert not listeners, f"the browser is listening on a socket: {listeners}"
+
+
+# ---------------------------------------------------------------------------
+# closing it really closes it
+# ---------------------------------------------------------------------------
+#
+# The leak these two tests exist for was real and was found by hand: a run that
+# hung in teardown left `Chrome --user-data-dir=~/.daa/browser-profile` and its
+# GPU and network helpers alive on the machine, and the next start would have
+# degraded with "the browser profile is already in use". Care is not a fix;
+# an assertion is. Both look ONLY for processes carrying the scratch profile
+# this test created, so neither can see -- let alone kill -- the user's real
+# Chrome, or a daa they happen to be running.
+
+
+def _in_its_own_thread(body, profile: Path, *, timeout_s: float = 60.0):
+    """Run `body` on a thread of its own, and never let it hang the suite.
+
+    Playwright's sync API is bound to the thread that started it -- a second
+    `sync_playwright().start()` on a thread that already has one raises
+    outright -- so a second, disposable browser has to live on its own thread.
+    The join is bounded and the profile is reaped whatever happens, so a test
+    that goes wrong fails loudly instead of leaving a Chrome behind, which is
+    the very thing this section is here to prevent.
+    """
+    box: dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            body()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True, name="daa-scratch-browser")
+    thread.start()
+    thread.join(timeout=timeout_s)
+    alive = thread.is_alive()
+    reap_profile_processes(profile)
+    if "error" in box:
+        raise box["error"]
+    assert not alive, f"the scratch browser thread did not finish in {timeout_s}s"
+
+
+def _scratch_session(profile: Path, site: str) -> PlaywrightSession:
+    options = BrowserOptions(
+        profile_dir=profile,
+        page_cache_dir=profile / "pages",
+        headless=True,
+        allow_private_hosts=True,
+        op_timeout_ms=5_000,
+    )
+    session = PlaywrightSession(options)
+    degraded = session.ensure()
+    if degraded is not None:
+        pytest.skip(f"no usable browser: {degraded.detail} -- {degraded.remedy}")
+    session.open_tab(f"{site}/article.html")
+    return session
+
+
+def test_closing_the_session_kills_every_process_on_its_profile(tmp_path, fixture_site):
+    profile = tmp_path / "scratch"
+
+    def body() -> None:
+        session = _scratch_session(profile, fixture_site)
+        try:
+            assert processes_using_profile(profile), "the browser should be running by now"
+            started = time.monotonic()
+            session.close()
+            elapsed = time.monotonic() - started
+            assert session.started is False
+            assert processes_using_profile(profile) == []
+            assert elapsed < 10, f"close() took {elapsed:.1f}s; it is meant to be bounded"
+            # Idempotent: the second close is a no-op, not an exception.
+            session.close()
+        finally:
+            session.close()
+
+    _in_its_own_thread(body, profile)
+
+
+def test_a_close_that_never_returns_still_leaves_no_chrome_behind(tmp_path, fixture_site):
+    """The watchdog, against a context that will not close.
+
+    A real wedged Chrome is not reproducible on demand, so the pipe is
+    simulated exactly: `close()` blocks until the browser process is actually
+    gone, which is what being blocked on Chrome's pipe *means*. If the watchdog
+    never fires, nothing ever unblocks it -- so the stand-in gives up after its
+    own deadline and the test fails instead of hanging the suite.
+    """
+    profile = tmp_path / "wedged"
+
+    def body() -> None:
+        session = _scratch_session(profile, fixture_site)
+
+        class WedgedContext:
+            def __init__(self, inner):
+                self.inner = inner
+                self.closed_at: float | None = None
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def close(self, *_args, **_kwargs):
+                deadline = time.monotonic() + 30
+                while processes_using_profile(profile) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.closed_at = time.monotonic()
+
+        wedged = WedgedContext(session._context)
+        session._context = wedged
+        try:
+            started = time.monotonic()
+            session.close(timeout_s=2.0)
+            elapsed = time.monotonic() - started
+            assert wedged.closed_at is not None
+            assert elapsed >= 2.0, "the watchdog fired before its deadline"
+            assert elapsed < 15, f"a wedged close took {elapsed:.1f}s"
+            assert processes_using_profile(profile) == []
+            assert session.started is False
+        finally:
+            session.close()
+
+    _in_its_own_thread(body, profile)
 
 
 # ---------------------------------------------------------------------------
