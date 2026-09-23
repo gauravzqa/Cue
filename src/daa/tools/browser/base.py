@@ -75,8 +75,24 @@ class BrowserTool(BaseTool):
 
     @property
     def options(self) -> BrowserOptions:
+        """The session's options, not a fresh default.
+
+        This used to read `self._session`, which is None until `backend` binds
+        it -- so a tool built without an explicit session answered from
+        `BrowserOptions()` while the browser it would actually drive ran on
+        whatever the process-wide session was configured with. Two sources of
+        truth for `allow_private_hosts` and `summarize_private_pages`, which
+        are the two settings here that decide what daa will refuse.
+
+        Nothing misbehaves today, because `build_loop` passes no options and
+        both sides land on the defaults. That is exactly what made it worth
+        closing: the same shape as the `dry_run` registry trap, where an
+        explicit setting was silently answered by a tool that had decided for
+        itself. Reading `backend` constructs the session object; it does not
+        start a browser.
+        """
         if self._options is None:
-            self._options = getattr(self._session, "options", None) or BrowserOptions()
+            self._options = getattr(self.backend, "options", None) or BrowserOptions()
         return self._options
 
     @property

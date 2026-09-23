@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from daa.config import Settings
 from daa.tools.base import ShellResult
 from daa.tools.browser import session as session_mod
 from daa.tools.browser.session import (
@@ -264,3 +265,41 @@ def test_an_interpreter_that_dies_with_a_session_open_still_closes_it():
     finally:
         session_mod._LIVE_SESSIONS.discard(session)
     assert closed, "the atexit hook did not close an abandoned session"
+
+
+def test_a_tool_answers_to_the_session_it_will_actually_drive(monkeypatch):
+    """`options` resolved BEFORE the session was bound, so a tool built with no
+    explicit session reported defaults while driving a session configured
+    otherwise. Two sources of truth for the two settings that decide what daa
+    refuses -- the same shape as the `dry_run` registry trap."""
+    from daa.tools.browser import session as session_mod
+    from daa.tools.browser.reading import OpenTab
+
+    session_mod.reset_session()
+    configured = session_mod.BrowserOptions(allow_private_hosts=True)
+    try:
+        session_mod.get_session(configured)
+        tool = OpenTab(Settings(dry_run=True, enable_browser=True))
+        assert tool.options.allow_private_hosts is True, (
+            "the tool answered from a fresh default, not from the session it will drive"
+        )
+    finally:
+        session_mod.reset_session()
+
+
+def test_explicit_options_still_win_over_the_session():
+    """The constructor argument is how a test or an embedder pins a tool to its
+    own configuration; consulting the session must not override it."""
+    from daa.tools.browser import session as session_mod
+    from daa.tools.browser.reading import OpenTab
+
+    session_mod.reset_session()
+    try:
+        session_mod.get_session(session_mod.BrowserOptions(allow_private_hosts=True))
+        tool = OpenTab(
+            Settings(dry_run=True, enable_browser=True),
+            options=session_mod.BrowserOptions(allow_private_hosts=False),
+        )
+        assert tool.options.allow_private_hosts is False
+    finally:
+        session_mod.reset_session()
