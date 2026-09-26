@@ -352,10 +352,20 @@ def tool_result_text(
         # told. `summarise_page` is named because it is the ANNOUNCED way to
         # get that text, and the model needing to ask for it out loud is the
         # point rather than a cost.
+        # The ADVICE has to match what was actually withheld. Naming
+        # `summarise_page` unconditionally told the model to reach for a
+        # BROWSER tool after `ui_describe` or `get_clipboard` -- where it
+        # cannot help, and where obeying would fire an ANNOUNCE egress at
+        # whatever page happened to be open. A suggestion that does not apply
+        # is worse than none: this one would have caused a send.
+        route = (
+            " Use summarise_page if the answer needs the text itself."
+            if _PAGE_TEXT in withheld
+            else " Work from what daa said above, or ask; do not guess at the rest."
+        )
         head += (
             f" · NOT SENT TO YOU: {', '.join(withheld[:2])}. You have its shape only "
-            "— do not say what it does or does not contain; use summarise_page to "
-            "get the text."
+            f"— do not say what it does or does not contain.{route}"
         )
     shaped = shape_data(data)
     if shaped:
@@ -367,8 +377,9 @@ def tool_result_text(
 # model should understand it is missing. A key absent from here is still
 # removed -- this list only decides what is worth a sentence, and a step whose
 # data was all machinery should not carry a warning about nothing.
+_PAGE_TEXT = "the page text"
 _WITHHELD_NAMES = {
-    "text": "the page text",
+    "text": _PAGE_TEXT,
     "content": "the content",
     "body": "the body text",
     "html": "the page markup",

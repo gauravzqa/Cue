@@ -214,6 +214,25 @@ def test_enhanced_user_interface_is_never_touched():
 # ---------------------------------------------------------------------------
 
 
+def _screen_is_locked() -> bool:
+    """Same check as test_computer_live.py, for the same reason.
+
+    While the screen is locked macOS does not publish this process's windows
+    to Accessibility, so the probe below finds the application element and no
+    window beneath it -- and fails with `assert 'daa ax probe window' in
+    ['python']`, which points at the AX claim being wrong rather than at the
+    lock. The live suite learned this the expensive way and skips; this test
+    was written before that and kept failing misleadingly on its own.
+    """
+    try:
+        import Quartz  # type: ignore
+
+        d = Quartz.CGSessionCopyCurrentDictionary() or {}
+        return bool(d.get("CGSSessionScreenIsLocked", 0))
+    except Exception:  # noqa: BLE001 -- unknown is not locked; let the test speak
+        return False
+
+
 @pytest.mark.macos
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
 def test_ax_window_titles_come_from_the_app_not_from_the_window_server():
@@ -227,6 +246,10 @@ def test_ax_window_titles_come_from_the_app_not_from_the_window_server():
     Screen Recording grant, takes no screenshots, and still says "in Account
     Settings in Safari".
     """
+    if _screen_is_locked():
+        pytest.skip("the screen is locked, so macOS hides this process's windows from "
+                    "Accessibility; unlock it and run this test again")
+
     import AppKit  # type: ignore
     from ApplicationServices import (  # type: ignore
         AXUIElementCopyAttributeValue,
